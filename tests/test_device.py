@@ -403,6 +403,65 @@ class SdAutorunTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             chain_autorun("echo no shebang\n")
 
+    def test_start_line_reads_the_folder_beside_the_autorun(self):
+        from device import chain_autorun, SD_COMMAND, SD_FOLDER, SD_MARKER
+        self.assertEqual(SD_FOLDER, "autorun/sample-base")
+        self.assertIn('"$(dirname -- "$0")/sample-base/sd-boot.sh"', SD_COMMAND)
+        self.assertNotIn("..", SD_COMMAND)
+        # An install from before (its folder at the card's top): its line replaced by the new one.
+        old = ("#!/bin/sh\n" + SD_MARKER + "\ntrap '/bin/sh \"$(dirname -- \"$0\")/../sample-base/sd-boot.sh\" "
+               "\"$(dirname -- \"$0\")/../sample-base\" > /run/sample-base-sd.log 2>&1 || true' EXIT\necho ssh\n")
+        chained = chain_autorun(old)
+        self.assertNotIn("../sample-base", chained)
+        self.assertEqual(chained, chain_autorun("#!/bin/sh\necho ssh\n"))
+
+    def local_device(self):
+        def run(command, *, input=None, check=True):
+            result = subprocess.run(["sh", "-c", command], input=input, text=True, capture_output=True)
+            if check and result.returncode:
+                raise RuntimeError(result.stderr.strip())
+            return result
+        device = Device()
+        device.run = run
+        return device
+
+    def test_old_folder_at_the_card_top_moves_into_autorun(self):
+        with tempfile.TemporaryDirectory() as temp:
+            card = Path(temp)
+            (card / "autorun").mkdir()
+            (card / "sample-base/autorun-backup").mkdir(parents=True)
+            (card / "sample-base/autorun-backup/autorun.sh").write_text("original\n")
+            (card / "sample-base/sd-boot.sh").write_text("x")
+            (card / "sample-base/dev-previous").mkdir()
+            with patch("builtins.print"):
+                self.local_device().move_old_sd_folder(str(card / "sample-base"), str(card / "autorun/sample-base"))
+            self.assertFalse((card / "sample-base").exists())
+            self.assertEqual((card / "autorun/sample-base/autorun-backup/autorun.sh").read_text(), "original\n")
+            self.assertTrue((card / "autorun/sample-base/dev-previous").is_dir())
+
+    def test_old_folder_beside_a_new_one_gives_its_backup_and_goes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            card = Path(temp)
+            (card / "autorun/sample-base").mkdir(parents=True)
+            (card / "sample-base/autorun-backup").mkdir(parents=True)
+            (card / "sample-base/autorun-backup/autorun.sh").write_text("original\n")
+            for name in ("sample-base", "sd-boot.sh", "SHA256SUMS", "app"):
+                (card / "sample-base" / name).write_text("x")
+            device = self.local_device()
+            with patch("builtins.print"):
+                device.move_old_sd_folder(str(card / "sample-base"), str(card / "autorun/sample-base"))
+            self.assertFalse((card / "sample-base").exists())
+            self.assertEqual((card / "autorun/sample-base/autorun-backup/autorun.sh").read_text(), "original\n")
+            # Files install-sd did not put there keep the old folder.
+            (card / "sample-base").mkdir()
+            (card / "sample-base/notes.txt").write_text("mine")
+            (card / "sample-base/app").write_text("x")
+            with patch("builtins.print"):
+                device.move_old_sd_folder(str(card / "sample-base"), str(card / "autorun/sample-base"))
+            self.assertEqual(sorted(os.listdir(card / "sample-base")), ["notes.txt"])
+            # No old folder: nothing happens.
+            device.move_old_sd_folder(str(card / "nothing"), str(card / "autorun/sample-base"))
+
     def test_uninstall_takes_out_only_our_lines(self):
         from device import chain_autorun, without_marker, SD_MARKER
         plain = "#!/bin/sh\necho ssh\n"

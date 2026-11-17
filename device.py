@@ -30,8 +30,12 @@ RUN_HEADROOM = 32 << 20
 # autorun.json, autorun.sh and the salt (as mpc-sample-plugins found).
 AUTORUN_SALT = b"f7bed1c9-7e90-4731-9194-c996666b4331"
 SD_MARKER = "# SAMPLE_BASE_SD_START"
-SD_COMMAND = ('/bin/sh "$(dirname -- "$0")/../sample-base/sd-boot.sh" '
-              '"$(dirname -- "$0")/../sample-base" > /run/sample-base-sd.log 2>&1 || true')
+# install-sd's folder: inside the card's autorun folder, beside autorun.sh, so nothing is added at the card's top
+# (the release zip's layout too). Installs before kept it at the card's top: install-sd moves that one in.
+SD_FOLDER = "autorun/sample-base"
+OLD_SD_FOLDER = "sample-base"
+SD_COMMAND = ('/bin/sh "$(dirname -- "$0")/sample-base/sd-boot.sh" '
+              '"$(dirname -- "$0")/sample-base" > /run/sample-base-sd.log 2>&1 || true')
 PLUGINS_MARKER = "# MPC_PLUGINS_SD_START"
 SD_FILES = ("sample-base", "restore-stock.sh", "sd-boot.sh", "sd-worker.sh", "sd-update.sh")
 
@@ -252,7 +256,7 @@ class Device:
                 raise RuntimeError("Build first with ./build.sh")
         q = shlex.quote
         card = self.card()
-        folder, autorun = card + "/sample-base", card + "/autorun"
+        folder, autorun, old = card + "/" + SD_FOLDER, card + "/autorun", card + "/" + OLD_SD_FOLDER
         manifest = self.run("cat " + q(autorun + "/autorun.json")).stdout
         script = self.run("cat " + q(autorun + "/autorun.sh")).stdout
         if [entry.get("path") for entry in json.loads(manifest)["value0"]["scripts"]] != ["autorun.sh"]:
@@ -260,6 +264,7 @@ class Device:
         if self.run("cat " + q(autorun + "/autorun.check")).stdout.strip() != autorun_check(manifest, script):
             raise RuntimeError("The card's autorun.check does not match its autorun; nothing changed")
         chained = chain_autorun(script, remove_plugins)
+        self.move_old_sd_folder(old, folder)
         # The files first, checked, then the autorun: a cut-off install never starts half an app.
         self.run("mkdir -p " + q(folder + "/autorun-backup"))
         if self.run("ls " + q(folder + "/autorun-backup/autorun.sh"), check=False).returncode:
@@ -277,6 +282,24 @@ class Device:
         print("Installed on the card: " + app + " starts at every boot; leaving it returns to stock until the next one.")
         print("Previous autorun kept in " + folder + "/autorun-backup.")
 
+    def move_old_sd_folder(self, old, folder):
+        """An install from before, at the card's top, into the autorun folder: renamed whole when nothing is there
+        yet (its autorun backup and anything else in it go along); else its backup when the new folder has none, its
+        installed files removed, and the folder itself when that leaves it empty."""
+        q = shlex.quote
+        if self.run("[ -d " + q(old) + " ]", check=False).returncode:
+            return
+        if self.run("[ -e " + q(folder) + " ]", check=False).returncode:
+            self.run("mv " + q(old) + " " + q(folder) + " && sync")
+            print("Moved " + old + " to " + folder + ".")
+            return
+        self.run("[ -e " + q(folder + "/autorun-backup") + " ] || [ ! -d " + q(old + "/autorun-backup") + " ] || mv " +
+                 q(old + "/autorun-backup") + " " + q(folder + "/"))
+        self.run("cd " + q(old) + " && rm -f " + " ".join(SD_FILES) + " SHA256SUMS app && cd / && (rmdir " + q(old) +
+                 " 2>/dev/null || true) && sync")
+        if not self.run("[ -d " + q(old) + " ]", check=False).returncode:
+            print("Left " + old + ": it holds files install-sd did not put there.")
+
     def uninstall_sd(self):
         q = shlex.quote
         card = self.card()
@@ -288,8 +311,10 @@ class Device:
             print("The card does not start sample-base; nothing changed.")
             return
         self.write_autorun(autorun, manifest, plain)
-        self.run("cd " + q(card + "/sample-base") + " && rm -f " + " ".join(SD_FILES) + " SHA256SUMS app && sync")
-        print("sample-base no longer starts from the card (its autorun backup stays in sample-base/autorun-backup).")
+        for folder in (card + "/" + SD_FOLDER, card + "/" + OLD_SD_FOLDER):
+            self.run("[ ! -d " + q(folder) + " ] || (cd " + q(folder) + " && rm -f " + " ".join(SD_FILES) +
+                     " SHA256SUMS app && sync)")
+        print("sample-base no longer starts from the card (its autorun backup stays in " + SD_FOLDER + "/autorun-backup).")
 
     def control(self, command):
         print(self.run(ACTIVE + "/sample-base --ctl " + shlex.quote(command)).stdout.strip())

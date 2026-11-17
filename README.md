@@ -175,10 +175,11 @@ python3 device.py uninstall-sd
 ```
 
 `install-sd` copies the app, the recovery script and two small boot scripts
-into `sample-base/` on the card with their hashes, keeps the card's autorun
-in `sample-base/autorun-backup/`, and chains a start after the card's own
-`autorun/autorun.sh` (signed in `autorun.check`, the firmware's salted
-digest). At boot the stock app runs that autorun; the boot script hands off
+into `autorun/sample-base/` on the card with their hashes, keeps the card's
+autorun in `autorun/sample-base/autorun-backup/`, and chains a start after the
+card's own `autorun/autorun.sh` (signed in `autorun.check`, the firmware's
+salted digest). Nothing is added at the card's top; a `sample-base/` there
+from an older install is moved into `autorun/`. At boot the stock app runs that autorun; the boot script hands off
 to a separate service that checks the stock identity and the files, copies
 them into a new RAM directory, runs the self-test and starts the same
 session unit as `start`. Leaving the app (or any failure) returns to stock
