@@ -40,6 +40,16 @@ static bool pace_idle = false;   // The capture thread is back for more: all it 
 static std::atomic<bool> pitch_control {false};
 static std::atomic<long> pitch {1000000}, first_pitch {0};
 static std::atomic<unsigned> pitch_writes {0};
+// Its playback pitch control the same way: the size of the packets it sends.
+static std::atomic<bool> playback_pitch_control {false};
+static std::atomic<long> playback_pitch {1000000}, first_playback_pitch {0};
+static std::atomic<unsigned> playback_pitch_writes {0};
+// Paced playback: the test hands the playback thread the room the gadget
+// has sent on to the host and waits until it has filled it, so the drift
+// test runs both clocks itself.
+static std::atomic<bool> paced_out {false};
+static unsigned out_room = 0; // Under pace_lock: frames the playback thread may write
+static bool out_idle = false; // The playback thread is back waiting: all it wrote is counted
 
 extern "C" int __wrap_snd_card_next(int* card) { *card = *card < 0 && gadget ? 0 : -1; return 0; }
 extern "C" int __wrap_snd_ctl_open(snd_ctl_t** ctl, const char* name, int) {
@@ -60,8 +70,14 @@ extern "C" int __wrap_snd_ctl_elem_read(snd_ctl_t*, snd_ctl_elem_value_t* value)
     return 0;
 }
 extern "C" int __wrap_snd_ctl_elem_write(snd_ctl_t*, snd_ctl_elem_value_t* value) {
-    if (!pitch_control || snd_ctl_elem_value_get_interface(value) != SND_CTL_ELEM_IFACE_PCM ||
-        strcmp(snd_ctl_elem_value_get_name(value), "Capture Pitch 1000000")) return -ENOENT;
+    if (snd_ctl_elem_value_get_interface(value) != SND_CTL_ELEM_IFACE_PCM) return -ENOENT;
+    const char* name = snd_ctl_elem_value_get_name(value);
+    if (playback_pitch_control && !strcmp(name, "Playback Pitch 1000000")) {
+        playback_pitch = snd_ctl_elem_value_get_integer(value, 0);
+        if (playback_pitch_writes++ == 0) first_playback_pitch = playback_pitch.load();
+        return 0;
+    }
+    if (!pitch_control || strcmp(name, "Capture Pitch 1000000")) return -ENOENT;
     pitch = snd_ctl_elem_value_get_integer(value, 0);
     if (pitch_writes++ == 0) first_pitch = pitch.load();
     return 0;
@@ -84,9 +100,22 @@ extern "C" int __wrap_snd_pcm_hw_params_get_channels_min(const snd_pcm_hw_params
     if (result >= 0 && gadget_channels) *value = gadget_channels; // The gadget offers exactly its mask's channels.
     return result;
 }
-extern "C" int __wrap_snd_pcm_wait(snd_pcm_t*, int) {
+extern "C" int __wrap_snd_pcm_wait(snd_pcm_t* pcm, int) {
+    if (paced_out && snd_pcm_stream(pcm) == SND_PCM_STREAM_PLAYBACK) {
+        std::unique_lock<std::mutex> lock(pace_lock);
+        out_idle = true; pace_change.notify_all();
+        if (!pace_change.wait_for(lock, std::chrono::milliseconds(10), [] { return out_room > 0; })) return 0;
+        out_idle = false;
+        return 1;
+    }
     if (!paced) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     return 1;
+}
+extern "C" snd_pcm_sframes_t __real_snd_pcm_avail_update(snd_pcm_t*);
+extern "C" snd_pcm_sframes_t __wrap_snd_pcm_avail_update(snd_pcm_t* pcm) {
+    if (!paced_out || snd_pcm_stream(pcm) != SND_PCM_STREAM_PLAYBACK) return __real_snd_pcm_avail_update(pcm);
+    std::lock_guard<std::mutex> lock(pace_lock);
+    return snd_pcm_sframes_t(out_room);
 }
 // Host audio: left 0.5, right -0.5, as S32_LE (the first format offered).
 extern "C" snd_pcm_sframes_t __wrap_snd_pcm_readi(snd_pcm_t*, void* buffer, snd_pcm_uframes_t frames) {
@@ -110,6 +139,12 @@ extern "C" snd_pcm_sframes_t __wrap_snd_pcm_readi(snd_pcm_t*, void* buffer, snd_
 static bool near_s32(int32_t sample, double value) { return std::abs(sample - value * 2147483648.0) < 1024; }
 extern "C" snd_pcm_sframes_t __wrap_snd_pcm_writei(snd_pcm_t*, const void* buffer, snd_pcm_uframes_t frames) {
     ++writes;
+    if (paced_out) {
+        std::lock_guard<std::mutex> lock(pace_lock);
+        frames = std::min<snd_pcm_uframes_t>(frames, out_room);
+        out_room -= unsigned(frames);
+        if (!frames) return -EAGAIN;
+    }
     unsigned stride = gadget_channels ? gadget_channels.load() : 2;
     auto* samples = static_cast<const int32_t*>(buffer);
     for (snd_pcm_uframes_t n = 0; n < frames; ++n) {
@@ -258,6 +293,28 @@ static void output() {
     wait_for([&] { usb.push(block.data(), 128, &stems); return stem_frames > 0; });
     usb.stop();
     assert(wrong_frames == 0);
+
+    // With the gadget's playback pitch control the output locks at once, at
+    // the nominal pitch, its ring held at a block, a period and 2 ms; at the
+    // device's rate the frames pass untouched, at another they are converted
+    // at a fixed ratio. Stopping leaves the pitch nominal.
+    playback_pitch_control = true; playback_pitch = 0; playback_pitch_writes = 0; stem_frames = 0;
+    for (unsigned host : {44100u, 48000u}) {
+        playback_rate = host;
+        usb.start("auto");
+        wait_for([&] { return usb.state() == UsbStreamState::Running; });
+        auto locked = usb.stats();
+        assert(locked.locked && first_playback_pitch == 1000000 && locked.trim_ppm == 0);
+        assert(locked.target == UsbAudioOutput::locked_target(44100, 256) && locked.target == 472); // The null PCM's period
+        auto locked_json = usb.json();
+        assert(locked_json.find("\"locked\":true,\"pitch_ppm\":0,\"target\":472,") != std::string::npos);
+        unsigned before = stem_frames;
+        wait_for([&] { usb.push(block.data(), 128, &stems); return stem_frames > before; });
+        playback_pitch = 0;
+        usb.stop();
+        assert(playback_pitch == 1000000 && !usb.stats().locked && wrong_frames == 0);
+    }
+    playback_pitch_control = false;
     gadget_channels = 0; playback_rate = 0;
 }
 
@@ -361,6 +418,100 @@ static void input_unlocked(double ppm, bool follows) {
     assert(run.low > target - 450 && run.high < target + 150);
 }
 
+// Hands the playback thread `frames` of room, as the gadget sends them on to
+// the host, and waits until it has written them.
+static void send(unsigned frames) {
+    std::unique_lock<std::mutex> lock(pace_lock);
+    out_room += frames; out_idle = false;
+    pace_change.notify_all();
+    pace_change.wait(lock, [] { return out_room == 0 && out_idle; });
+}
+
+// Two minutes of a host whose clock runs `ppm` fast (slow below 0) against
+// the device's 44.1 kHz, the gadget sending it 64 frames at a time, each
+// sized by the pitch last written when it `follows` it; an audio thread
+// pushes 128 frames as each falls due. What the second minute saw, as in
+// drift().
+static Drift output_drift(double ppm, bool follows) {
+    UsbAudioOutput usb;
+    gadget = true; gadget_channels = 18; playback_rate = 44100; paced_out = true;
+    playback_pitch_control = true; playback_pitch = 1000000;
+    usb.start("auto");
+    wait_for([&] { return usb.state() == UsbStreamState::Running; });
+    const double speed = 1 + ppm * 1e-6;
+    std::array<int32_t, 2 * 128> block;
+    for (unsigned n = 0; n < 128; ++n) { block[2 * n] = 0x40000000; block[2 * n + 1] = int32_t(0xc0000000u); }
+    double owed = 0, trims = 0, pitches = 0; // Device frames due to the audio thread; the second minute's sums
+    unsigned samples = 0, chunk = 64;
+    Drift result;
+    for (double host = 0; host < 120 * 44100 * speed; host += chunk) {
+        owed += chunk / (speed * (follows ? playback_pitch * 1e-6 : 1.0));
+        for (; owed >= 128; owed -= 128) usb.push(block.data(), 128);
+        send(chunk);
+        if (host > 60 * 44100 * speed) {
+            auto now = usb.stats();
+            result.low = std::min(result.low, now.buffered); result.high = std::max(result.high, now.buffered);
+            trims += now.trim_ppm; pitches += now.pitch_ppm; ++samples;
+        }
+    }
+    result.settled = usb.stats();
+    usb.stop();
+    paced_out = false; playback_pitch_control = false; gadget_channels = 0; playback_rate = 0;
+    result.trim = trims / samples; result.pitch = pitches / samples;
+    return result;
+}
+
+// Locked, the gadget's pitch averages the host's drift the other way (the
+// gadget sends faster to a slow host), nothing is converted or trimmed, and
+// the ring stays near its target, a few hundred frames, without running dry.
+static void output_locked(double ppm) {
+    auto run = output_drift(ppm, true);
+    double expected = (1 / (1 + ppm * 1e-6) - 1) * 1e6;
+    std::printf("output locked %+.0f ppm: pitch %+.1f ppm on average (%+.1f wanted), fill %u..%u (target %u), lowest %u, overflows %u, underruns %u\n",
+                ppm, run.pitch, expected, run.low, run.high, run.settled.target, run.settled.lowest, run.settled.overflows,
+                run.settled.underruns);
+    assert(run.settled.locked && run.settled.trim_ppm == 0 && run.trim == 0);
+    assert(run.settled.overflows == 0 && run.settled.underruns == 0);
+    assert(std::abs(run.pitch - expected) < std::max(10.0, std::abs(ppm) / 20));
+    assert(run.settled.lowest > 0 && run.high < run.settled.target + 400);
+}
+
+// A gadget whose packets take no notice of the pitch: the ring drifts off
+// its target, the output unlocks within seconds, the pitch goes back to
+// nominal, and from there the conversion is trimmed (by the drift the other
+// way) as without the control, never running dry.
+static void output_ignored(double ppm) {
+    auto run = output_drift(ppm, false);
+    double target = 1024 - ppm / 2;
+    std::printf("output ignored %+.0f ppm: unlocked, trim %+.1f ppm on average, fill %u..%u (target %.0f), overflows %u, underruns %u\n",
+                ppm, run.trim, run.low, run.high, target, run.settled.overflows, run.settled.underruns);
+    assert(!run.settled.locked && playback_pitch == 1000000 && run.settled.target == UsbAudioOutput::prime_frames);
+    assert(run.settled.overflows == 0 && run.settled.underruns == 0);
+    assert(std::abs(run.trim + ppm) < 10);
+    assert(run.low > target - 450 && run.high < target + 450);
+}
+
+// A channel exactly silent for the whole kernel is skipped and gives exact
+// silence; from the first sound it is converted like any other. Here
+// channel 1 gets an impulse after silence and channel 0 the same over a
+// constant 0.25, which DC passes exactly, so the two differ by 0.25 in every
+// output frame, the impulse's first and last taps among them.
+static void silent_channels() {
+    SincResampler<2> usb; usb.reset(44100, 48000);
+    unsigned frames = 0, sounding = 0;
+    for (unsigned n = 0; n < 2000; ++n) {
+        float impulse = n == 700 || n == 1300 ? 1.0f : 0.0f;
+        const float frame[2] {0.25f + impulse, impulse};
+        usb.feed(frame, [&](const float* out) {
+            assert(std::abs(out[0] - 0.25f - out[1]) < 1e-6f);
+            if (out[1] != 0.0f) ++sounding;
+            ++frames;
+        });
+    }
+    assert(sounding > 2 * 60 && sounding < 2 * 80); // About 64 taps' worth of output frames per impulse
+    std::printf("silent channels: %u of %u frames sounding\n", sounding, frames);
+}
+
 // A least-squares fit of a cos + b sin + c, `step` radians a sample: the
 // tone's amplitude and the rms of everything else.
 struct Tone { double amplitude, residual; };
@@ -454,6 +605,13 @@ int main() {
     input_unlocked(1000, false);
     input_unlocked(-300, false);
     input_unlocked(1500, true);
+    output_locked(48);
+    output_locked(-48);
+    output_locked(500);
+    output_locked(-500);
+    output_ignored(300);
+    output_ignored(-300);
     flatness();
     alias_rejection();
+    silent_channels();
 }

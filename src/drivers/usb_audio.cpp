@@ -74,21 +74,37 @@ Target find_target(const std::string& requested, const char* control) {
     return {gadget.pcm, gadget.control, gadget.pcm.empty() ? -1 : uac2_rate(gadget.control, control)};
 }
 
-// The gadget's feedback: how fast the computer is asked to send, in
-// millionths of its nominal rate (u_audio.c takes 750000 to 1000000 plus
-// 1000 per frame of `fb_max`). False without the control, which f_uac2 makes
-// only in asynchronous mode.
+// The gadget's pitch controls, in millionths of the nominal rate (u_audio.c
+// takes 750000 to 1000000 plus 1000 per frame of `fb_max`). "Capture Pitch
+// 1000000" is its feedback: how fast the computer is asked to send; f_uac2
+// makes it only in asynchronous mode. "Playback Pitch 1000000" is how fast
+// the gadget sends the computer, in the sizes of its packets. False without
+// the control.
 constexpr long nominal_pitch = 1000000;
-bool set_capture_pitch(const std::string& control, long pitch) {
+constexpr const char* capture_pitch = "Capture Pitch 1000000";
+constexpr const char* playback_pitch = "Playback Pitch 1000000";
+bool set_pitch(const std::string& control, const char* name, long pitch) {
     snd_ctl_t* ctl = nullptr;
     if (control.empty() || snd_ctl_open(&ctl, control.c_str(), SND_CTL_NONBLOCK) < 0) return false;
     snd_ctl_elem_value_t* value; snd_ctl_elem_value_alloca(&value);
     snd_ctl_elem_value_set_interface(value, SND_CTL_ELEM_IFACE_PCM);
-    snd_ctl_elem_value_set_name(value, "Capture Pitch 1000000");
+    snd_ctl_elem_value_set_name(value, name);
     snd_ctl_elem_value_set_integer(value, 0, pitch);
     bool ok = snd_ctl_elem_write(ctl, value) >= 0;
     snd_ctl_close(ctl);
     return ok;
+}
+
+// One period of `frames` frames of `channels` floats as the gadget's
+// samples: the first `carried` of each frame, silence after them, or a mono
+// gadget's first two summed.
+template <unsigned Width> void encode(const float* in, unsigned frames, unsigned channels, uint8_t* out, unsigned out_channels) {
+    unsigned carried = std::min(out_channels, channels);
+    for (unsigned frame = 0; frame < frames; ++frame, in += channels) {
+        if (out_channels == 1) { pcm_store<Width>(0.5f * (in[0] + in[1]), out); out += Width; continue; }
+        for (unsigned channel = 0; channel < carried; ++channel, out += Width) pcm_store<Width>(in[channel], out);
+        for (unsigned channel = carried; channel < out_channels; ++channel, out += Width) pcm_store<Width>(0.0f, out);
+    }
 }
 } // namespace
 
@@ -153,7 +169,7 @@ void UsbAudioInput::run(std::string requested) {
     // before a push since the stream settled.
     double fill_sum = 0; unsigned fill_count = 0, trim_frames = 0, checks = 0, astray = 0, low = ~0u;
     auto unlock = [&] {
-        if (!pitch_control.empty()) set_capture_pitch(pitch_control, nominal_pitch); // As found, for whoever streams next
+        if (!pitch_control.empty()) set_pitch(pitch_control, capture_pitch, nominal_pitch); // As found, for whoever streams next
         pitch_control.clear(); locked.store(false); pitch_ppm.store(0);
     };
     auto close = [&] {
@@ -179,7 +195,7 @@ void UsbAudioInput::run(std::string requested) {
                 if (open_stream(target.pcm, SND_PCM_STREAM_CAPTURE, target.rate, output_rate, period_frames, 32, capture)) {
                     open_rate = target.rate; open_device = output_rate; ++opens;
                     raw.assign(capture.period * capture.channels * capture.width, 0);
-                    if (set_capture_pitch(target.control, nominal_pitch)) { pitch_control = target.control; pitch_lock.reset(); }
+                    if (set_pitch(target.control, capture_pitch, nominal_pitch)) { pitch_control = target.control; pitch_lock.reset(); }
                     locked.store(!pitch_control.empty());
                     convert = pitch_control.empty() || capture.rate != output_rate;
                     resampler.reset(capture.rate, output_rate);
@@ -223,7 +239,7 @@ void UsbAudioInput::run(std::string requested) {
             ++checks;
             if (!pitch_control.empty()) {
                 int ppm = pitch_lock.update(average, aim, double(trim_frames) / capture.rate);
-                set_capture_pitch(pitch_control, nominal_pitch + ppm);
+                set_pitch(pitch_control, capture_pitch, nominal_pitch + ppm);
                 pitch_ppm.store(ppm);
                 astray = checks > settle_checks && std::abs(average - aim) > aim / 3 ? astray + 1 : 0;
                 if (astray >= astray_checks) { // The computer is not following: trim from here on, as without the control.
@@ -278,6 +294,7 @@ void UsbAudioOutput::stop() {
     accepting.store(false);
     set_state(UsbStreamState::Stopped);
     stream_rate.store(0); stream_channels.store(0); stream_width.store(0); trim_ppm.store(0);
+    locked.store(false); pitch_ppm.store(0); lowest.store(0);
 }
 
 std::string UsbAudioOutput::requested() const {
@@ -304,38 +321,74 @@ void UsbAudioOutput::push(const int32_t* frames, unsigned count, const UsbStems*
 void UsbAudioOutput::run(std::string requested) {
     raise_priority();
     constexpr unsigned chunk_frames = 32;
+    constexpr unsigned settle_checks = 8, astray_checks = 4; // As the input: 2 s, then 1 s off target unlocks
     Stream playback;
-    SincResampler<channels> resampler; // 38 KB of history: fine on this thread's stack
+    SincResampler<channels> resampler; // 37 KB of history: fine on this thread's stack
+    PitchLock pitch_lock;
     std::vector<uint8_t> raw;
-    std::vector<float> staged; // Converted frames not yet encoded, `channels` samples each.
+    std::vector<float> staged; // Frames not yet encoded, `channels` samples each.
     std::array<float, channels * chunk_frames> chunk;
     snd_pcm_uframes_t pending = 0, offset = 0; // Encoded frames in `raw` still to write, and where they start.
     long open_rate = 0;
     unsigned open_device = 0;
-    double fill_sum = 0; unsigned fill_count = 0;
+    std::string pitch_control; // The gadget's while its packets follow the AK4558, else empty
+    bool convert = true;       // Through the resampler: rates differ, or nothing is locked
+    // The ring's fill after each write since the last check, the computer's
+    // frames meanwhile, the checks since the stream opened, how many in a row
+    // found a locked ring far off its target, and the least the ring held
+    // before a pull since the stream settled.
+    double fill_sum = 0; unsigned fill_count = 0, check_frames = 0, checks = 0, astray = 0, low = ~0u;
+    auto unlock = [&] {
+        if (!pitch_control.empty()) set_pitch(pitch_control, playback_pitch, nominal_pitch); // As found, for whoever streams next
+        pitch_control.clear(); locked.store(false); pitch_ppm.store(0);
+    };
     auto close = [&] {
+        unlock();
         accepting.store(false, std::memory_order_release);
         ring.flush(); ring.pull(chunk.data(), 1, prime_frames); // Applies the flush: nothing is left buffered.
         if (playback.pcm) { snd_pcm_drop(playback.pcm); snd_pcm_close(playback.pcm); playback.pcm = nullptr; }
-        stream_rate.store(0); stream_channels.store(0); stream_width.store(0); trim_ppm.store(0);
+        stream_rate.store(0); stream_channels.store(0); stream_width.store(0); trim_ppm.store(0); lowest.store(0);
     };
-    // One period from the ring: converted to the computer's rate, then encoded.
+    // One period from the ring, converted to the computer's rate unless it
+    // is the device's and locked, then encoded.
     auto render_period = [&] {
+        const unsigned aim = fill_target.load(std::memory_order_relaxed);
         while (staged.size() < channels * playback.period) {
-            ring.pull(chunk.data(), chunk_frames, prime_frames); // Silence while priming.
+            unsigned before = ring.buffered();
+            if (ring.pull(chunk.data(), chunk_frames, aim) && checks >= settle_checks) low = std::min(low, before); // Silence while priming.
+            if (!convert) { staged.insert(staged.end(), chunk.begin(), chunk.end()); continue; }
             for (unsigned n = 0; n < chunk_frames; ++n)
                 resampler.feed(chunk.data() + channels * n, [&](const float* frame) { staged.insert(staged.end(), frame, frame + channels); });
         }
-        unsigned carried = std::min(playback.channels, channels);
-        for (snd_pcm_uframes_t frame = 0; frame < playback.period; ++frame) {
-            const float* in = staged.data() + channels * frame;
-            uint8_t* bytes = raw.data() + size_t(frame) * playback.channels * playback.width;
-            if (playback.channels == 1) { pcm_store(0.5f * (in[0] + in[1]), bytes, playback.width); continue; }
-            for (unsigned channel = 0; channel < playback.channels; ++channel)
-                pcm_store(channel < carried ? in[channel] : 0.0f, bytes + channel * playback.width, playback.width);
-        }
+        const unsigned frames = unsigned(playback.period);
+        if (playback.width == 2) encode<2>(staged.data(), frames, channels, raw.data(), playback.channels);
+        else if (playback.width == 3) encode<3>(staged.data(), frames, channels, raw.data(), playback.channels);
+        else encode<4>(staged.data(), frames, channels, raw.data(), playback.channels);
         staged.erase(staged.begin(), staged.begin() + channels * playback.period);
         pending = playback.period; offset = 0;
+    };
+    // Every 250 ms of the computer's audio, counted in its frames, the ring's
+    // average fill meanwhile sets the pitch, or trims the conversion.
+    auto check = [&] {
+        double average = fill_sum / fill_count, aim = fill_target.load();
+        ++checks;
+        if (!pitch_control.empty()) {
+            int ppm = -pitch_lock.update(average, aim, double(check_frames) / playback.rate); // The gadget drains this ring.
+            set_pitch(pitch_control, playback_pitch, nominal_pitch + ppm);
+            pitch_ppm.store(ppm);
+            astray = checks > settle_checks && std::abs(average - aim) > aim / 3 ? astray + 1 : 0;
+            if (astray >= astray_checks) { // The packets are not following: trim from here on, as without the control.
+                unlock();
+                if (!convert) { resampler.reset(open_device, playback.rate); convert = true; }
+                fill_target.store(prime_frames);
+            }
+        } else {
+            double factor = drift_trim(average, aim);
+            resampler.trim(factor);
+            trim_ppm.store(int(std::lround((factor - 1.0) * 1e6)));
+        }
+        if (low != ~0u) lowest.store(low);
+        fill_sum = 0; fill_count = 0; check_frames = 0;
     };
     // An underrun or suspend restarts the stream; anything else closes it until the next check.
     auto recover = [&](snd_pcm_sframes_t error) {
@@ -360,18 +413,18 @@ void UsbAudioOutput::run(std::string requested) {
                     open_rate = target.rate; open_device = input_rate; ++opens;
                     raw.assign(playback.period * playback.channels * playback.width, 0);
                     staged.clear(); staged.reserve(channels * (playback.period + chunk_frames * 2));
-                    pending = 0; fill_sum = 0; fill_count = 0;
+                    pending = 0;
+                    if (set_pitch(target.control, playback_pitch, nominal_pitch)) { pitch_control = target.control; pitch_lock.reset(); }
+                    locked.store(!pitch_control.empty());
+                    convert = pitch_control.empty() || playback.rate != input_rate;
                     resampler.reset(input_rate, playback.rate);
+                    fill_sum = 0; fill_count = 0; check_frames = 0; checks = 0; astray = 0; low = ~0u;
+                    fill_target.store(pitch_control.empty() ? prime_frames : locked_target(input_rate, unsigned(playback.period)));
                     ring.flush();
                     stream_rate.store(playback.rate); stream_channels.store(playback.channels); stream_width.store(playback.width);
                     accepting.store(true, std::memory_order_release);
                     set_state(UsbStreamState::Running);
                 } else set_state(UsbStreamState::Failed);
-            } else if (playback.pcm && fill_count) {
-                double factor = drift_trim(fill_sum / fill_count, prime_frames);
-                resampler.trim(factor);
-                trim_ppm.store(int(std::lround((factor - 1.0) * 1e6)));
-                fill_sum = 0; fill_count = 0;
             }
         }
         if (!playback.pcm) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); continue; }
@@ -388,7 +441,8 @@ void UsbAudioOutput::run(std::string requested) {
             if (written == -EAGAIN || written == 0) break;
             if (written < 0) { recover(written); break; }
             offset += snd_pcm_uframes_t(written); pending -= snd_pcm_uframes_t(written); room -= written;
-            fill_sum += ring.buffered(); ++fill_count;
+            fill_sum += ring.buffered(); ++fill_count; check_frames += unsigned(written);
+            if (check_frames >= playback.rate / 4) check();
         }
     }
     close();
@@ -396,7 +450,8 @@ void UsbAudioOutput::run(std::string requested) {
 
 UsbStreamStats UsbAudioOutput::stats() const {
     return {state(), rate(), stream_channels.load(), stream_width.load() * 8, ring.buffered(), ring.overflows.load(),
-            ring.underruns.load(), xruns.load(), opens.load(), trim_ppm.load()};
+            ring.underruns.load(), xruns.load(), opens.load(), trim_ppm.load(), locked.load(), pitch_ppm.load(),
+            fill_target.load(), lowest.load()};
 }
 
 std::string UsbAudioOutput::json() const {
@@ -407,7 +462,8 @@ std::string UsbAudioOutput::json() const {
     out << "{\"state\":" << json_string(usb_stream_state_names[size_t(now.state)]) << ",\"requested\":" << json_string(wanted)
         << ",\"device\":" << json_string(device) << ",\"rate\":" << now.rate << ",\"channels\":" << now.channels
         << ",\"stems\":" << stems() << ",\"bits\":" << now.bits << ",\"buffered\":" << now.buffered << ",\"trim_ppm\":" << now.trim_ppm
-        << ",\"overflows\":" << now.overflows << ",\"underruns\":" << now.underruns
+        << ",\"locked\":" << (now.locked ? "true" : "false") << ",\"pitch_ppm\":" << now.pitch_ppm << ",\"target\":" << now.target
+        << ",\"lowest\":" << now.lowest << ",\"overflows\":" << now.overflows << ",\"underruns\":" << now.underruns
         << ",\"xruns\":" << now.xruns << ",\"opens\":" << now.opens << '}';
     return out.str();
 }

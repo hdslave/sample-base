@@ -24,11 +24,12 @@
 // The computer's USB clock and the AK4558's drift apart, so each
 // direction runs its own thread with a FrameRing to the audio thread. The
 // input asks the computer, through the gadget's feedback ("Capture Pitch
-// 1000000"), to send at the AK4558's pace, which keeps its ring a few
-// milliseconds deep; without that control, or with a computer that ignores
-// it, and always on the output, a SincResampler that drift_trim() nudges
-// keeps the ring near `prime_frames`. Neither opens anything until the
-// computer streams.
+// 1000000"), to send at the AK4558's pace, and the output sizes the gadget's
+// packets ("Playback Pitch 1000000") to the same pace, which keeps each ring
+// a few milliseconds deep; without those controls, or with a computer that
+// ignores the feedback, a SincResampler that drift_trim() nudges keeps the
+// ring near `prime_frames`. Neither opens anything until the computer
+// streams.
 
 struct Uac2Gadget { std::string pcm, control; };
 // The first UAC2 gadget card, or empty names without one.
@@ -43,12 +44,13 @@ constexpr std::array<const char*, size_t(UsbStreamState::Count)> usb_stream_stat
 // One direction's counters, as json() reports them. Any thread may read
 // them: every field comes from an atomic. `trim_ppm` is the direction's drift
 // trim: how much faster than the two rates' ratio its converter reads input,
-// in parts per million. The input alone fills the rest: `locked` while the
-// computer follows the gadget's feedback, `pitch_ppm` how much faster than
-// its nominal rate it is asked to send, `target` the fill the ring is held at
-// (and primes to), and `lowest` the least the ring held as new frames came in
-// since the stream settled, 2 seconds after it opened: the margin left before
-// it would run dry.
+// in parts per million. `locked` while the computer's frames follow the
+// AK4558 through the gadget's pitch controls, `pitch_ppm` how much faster
+// than its nominal rate the computer is asked to send (input) or the gadget
+// sends (output), `target` the fill the ring is held at (and primes to), and
+// `lowest` the least the ring held as frames came in (input) or went out
+// (output) since the stream settled, 2 seconds after it opened: the margin
+// left before it would run dry.
 struct UsbStreamStats {
     UsbStreamState state = UsbStreamState::Stopped;
     unsigned rate = 0, channels = 0, bits = 0, buffered = 0, overflows = 0, underruns = 0, xruns = 0, opens = 0;
@@ -129,12 +131,23 @@ struct UsbStems { float track[usb_stem_count][usb_stem_frames]; };
 // What the computer records from the MPC: whatever the audio thread hands to
 // push(), which the runtime does with every block an app renders, so the
 // computer hears what the jacks play, after the app's own volume, unless the
-// app gives a mix of its own (App::usb_mix()). A separate
-// thread finds the gadget, waits for the computer to start recording, then
-// converts the device's rate to the computer's and writes it. drift_trim() keeps
-// the ring near `prime_frames` by nudging that conversion, so a long
-// recording neither runs dry nor overflows. Silence goes out while the ring
-// primes. push() drops everything while nothing is streaming.
+// app gives a mix of its own (App::usb_mix()). A separate thread finds the
+// gadget, waits for the computer to start recording, then writes it.
+// Silence goes out while the ring primes. push() drops everything while
+// nothing is streaming.
+//
+// With the gadget's "Playback Pitch 1000000" control the gadget sends at the
+// AK4558's pace: after every 250 ms of the computer's audio, PitchLock turns
+// the ring's average fill meanwhile into the pitch the gadget's packets are
+// sized by, holding the ring at locked_target(), one audio block, one period
+// and 2 ms. At equal rates the frames pass untouched; at others a resampler
+// converts them at a fixed ratio. Should the ring stray off its target
+// anyway, after a second more than a third of it away the output unlocks and
+// trims as below.
+//
+// Without the control the resampler converts every frame, and drift_trim()
+// keeps the ring near `prime_frames` by nudging it, so a long recording
+// neither runs dry nor overflows.
 //
 // The gadget's channels are the main mix (1 and 2), then each stem in
 // order (3 to 18), then silence; a mono gadget gets the main mix summed.
@@ -143,6 +156,10 @@ class UsbAudioOutput {
 public:
     static constexpr unsigned ring_frames = 8192, prime_frames = 1024;
     static constexpr unsigned channels = 2 + usb_stem_count; // What the ring carries
+    // The ring's fill while locked: the audio thread's 128-frame block, the
+    // gadget's period and 2 ms to spare (280 frames at 48 kHz with the
+    // 18-channel gadget's 56-frame period).
+    static constexpr unsigned locked_target(unsigned rate, unsigned period) { return 128 + period + rate / 500; }
 
     UsbAudioOutput() = default;
     ~UsbAudioOutput() { stop(); }
@@ -180,10 +197,11 @@ private:
     Ring& ring = *owned_ring;
     std::array<float, usb_stem_frames * channels> block {}; // Audio thread: push()'s staging
     std::thread thread;
-    std::atomic<bool> running {false}, accepting {false};
+    std::atomic<bool> running {false}, accepting {false}, locked {false};
     std::atomic<uint8_t> current {uint8_t(UsbStreamState::Stopped)};
     std::atomic<unsigned> stream_rate {0}, stream_channels {0}, stream_width {0}, xruns {0}, opens {0};
-    std::atomic<int> trim_ppm {0};
+    std::atomic<unsigned> fill_target {prime_frames}, lowest {0};
+    std::atomic<int> trim_ppm {0}, pitch_ppm {0};
     std::atomic<unsigned> device_rate {44100};
     mutable std::mutex device_lock; // Guards the names; never taken by the audio thread.
     std::string device_name, requested_name;
