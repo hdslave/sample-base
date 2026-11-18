@@ -82,7 +82,9 @@ the gadget's f_midi, snd-usb-audio) received the bytes; where that mode is
 missing the read time stands in. They are not physical MIDI-wire timestamps.
 The MIDI loop sleeps in `HardwareMidi::wait()` (`ppoll` on every open input)
 rather than a fixed tick, so input is read as it arrives; an app's timed
-output (`App::midi_output`, `MidiOutput::wake_at`) sets how long it may sleep.
+output (`App::midi_output`, `MidiOutput::wake_at`) sets how long it may sleep,
+and `Session::wake_midi()` (an eventfd in the same `ppoll`) ends the sleep from
+any thread.
 The USB-C gadget carries MIDI: the stock configuration links `midi.midi`, the
 port is `f_midi` (driver `MIDI Gadget`) on the MPC and "MPC Sample" on a
 computer. A computer with no MIDI app open does not read it, so what is sent

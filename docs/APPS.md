@@ -95,7 +95,7 @@ so a pad is read the moment it arrives; keep MIDI hooks short.
 | `surface(event)` | MIDI | Every control-surface message. `event.pad` is 0–15 for a pad's note-on, note-off or pressure; `event.input` names a button or control (`surface/controls.h`); `event.syncing` marks the startup position replies; `event.timestamp_ns` is when it came in (CLOCK_MONOTONIC, as a MIDI packet's), to place a hit to the frame. |
 | `midi(port, packet)` | MIDI | Every packet from an external port (DIN or USB MIDI), including clock and SysEx. |
 | `midi_lost()` | MIDI | An external MIDI input disappeared; silence its notes. |
-| `midi_output(out, now)` | MIDI | Every pass of the MIDI loop: at least every 5 ms, as soon as input arrives, and when the app asked to be woken (`out.wake_at()`). `out` sends complete messages to an external port open now (`out.ports()`; never the surface) and sets the `CV_CLK_OUT` sync line (`out.sync()`, taken on first use). For MIDI and sync output timed by the app's own schedule; see "Timed MIDI out" below. |
+| `midi_output(out, now)` | MIDI | Every pass of the MIDI loop: at least every 5 ms, as soon as input arrives, when the app asked to be woken (`out.wake_at()`) and at once after `session().wake_midi()` from any thread. `out` sends complete messages to an external port open now (`out.ports()`; never the surface) and sets the `CV_CLK_OUT` sync line (`out.sync()`, taken on first use). For MIDI and sync output timed by the app's own schedule; see "Timed MIDI out" below. |
 | `lights(lights, now)` | MIDI | Every 5 ms. Ask for pad, fader, bank and button lights; only changes go to the surface. |
 | `draw(g)` | screen | Once per frame, as fast as the panel takes frames and at most 60 a second; animate from the clock, not the frame count. Paint the whole 320 × 240 screen. `load_typeface()` in `runtime/screen.h` gives the device font. |
 | `service(hardware)` | service | Every few milliseconds. Slow work: mixer routes, storage, files. |
@@ -213,6 +213,10 @@ kernel's high-resolution timers keep to well under a millisecond. To line
 MIDI up with the sound, time it on the audio clock: a block rendered now is
 heard `AudioFormat::latency_frames()` frames later (`drivers/audio.h`,
 given to `audio_opened()`). Melodee does this (`src/melodee/engine/midi_out.h` in melodee-sample).
+A message that should go out now rather than with the sound (a note played
+by hand) can be decided in `render()`: `session().wake_midi()` there runs the
+MIDI loop's next pass at once (an eventfd the loop's `ppoll` also watches),
+instead of up to 5 ms later.
 Messages are built with `juce::MidiMessage` (`juce_audio_basics` is part of
 the build). The ALSA sequencer could schedule in the kernel instead, but on
 this kernel its queues tick on the 1 ms system timer or the PCM's 2.9 ms

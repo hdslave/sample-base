@@ -55,9 +55,11 @@ struct Hardware {
 // What an app may send from the MIDI thread, in App::midi_output(): MIDI to
 // an external port open now (DIN or USB, never the control surface) and the
 // CV_CLK_OUT sync line. The runtime calls the hook on every pass of its MIDI
-// loop: at least every 5 ms, as soon as input arrives, and as close after
-// the time asked for with wake_at() as the kernel wakes it (well under a
-// millisecond), so an app can keep its own schedule of timed messages.
+// loop: at least every 5 ms, as soon as input arrives, as close after the
+// time asked for with wake_at() as the kernel wakes it (well under a
+// millisecond), so an app can keep its own schedule of timed messages, and at
+// once after session().wake_midi(), which any thread may call (render() too)
+// for a message that should go out now.
 class MidiOutput {
 public:
     using Clock = std::chrono::steady_clock;
