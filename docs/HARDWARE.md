@@ -259,6 +259,25 @@ record with no underruns; restore-stock.sh puts the original rate back.
 There is no implicit resampling of the main stream. USB-C audio in and out
 are separate streams with their own rate conversion, described below.
 
+## USB-C direct monitoring
+
+An app takes USB-C in a block at a time (`UsbAudioInput::pull()`, its ring
+held at 288 frames at 48 kHz) and the codec output then queues each block
+behind two or more periods (256 to 384 frames at two periods): a
+computer's instrument played from the MPC comes back about 11 ms after it
+arrives. `DirectMonitor` ([src/drivers/direct_monitor.h](../src/drivers/direct_monitor.h))
+skips both, as an audio interface's direct monitoring does: the USB-C input
+thread adds each 64-frame period it reads into the AK4558's playback buffer
+96 frames ahead of where the I2S DMA reads, on top of what the app rendered
+there, about 3 ms in all.
+
+| Part | How |
+| --- | --- |
+| Buffer | The codec's playback PCM opens with mmap access (`SND_PCM_ACCESS_MMAP_INTERLEAVED`, written with `snd_pcm_mmap_writei()`, as `writei` before); `AudioDevice` lends the buffer while `run()` runs and takes it back (waiting out a write in progress) before it goes. Other outputs, and a PCM that refuses mmap, stay read/write without it. |
+| Position | The Rockchip I2S DMA reports its position to the frame (dmaengine residue; `hw_ptr` moved 316 to 496 frames between reads at 48 kHz, never in whole periods). After each block the audio thread reads `snd_pcm_avail()` and publishes the frames written and played with the time; the input thread extrapolates on the device's rate. |
+| Pace | The computer sends at the AK4558's pace through `Capture Pitch` (above), so each period lands where the last ended, but the lock lets it wander by tens of frames over seconds. More than 16 frames off 96, a period repeats or leaves out one frame (`nudges()`: on the MPC with a Mac, one every 5 to 10 s once settled); out of 32 to 192 frames ahead it starts again at 96 (`slips()`, a click; none in a minute with the nudges, one in 3.6 minutes without). Never past what the app has written: that would be written over. |
+| Control | `DirectMonitor::set(on, gain)` from any thread; one process-wide instance, `direct_monitor()`. Dry: an app that also plays USB-C in through its own mix leaves it out while this is on. |
+
 ## USB-C audio output
 
 A computer recording from the MPC over USB-C gets whatever the app renders.

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 #include "drivers/usb_audio.h"
+#include "drivers/direct_monitor.h"
 #include "drivers/platform.h"
 #include <alsa/asoundlib.h>
 #include <pthread.h>
@@ -210,6 +211,7 @@ void UsbAudioInput::run(std::string requested) {
             if (convert) resampler.feed(left, right, [&](float l, float r) { converted.push_back(l); converted.push_back(r); });
             else { converted.push_back(left); converted.push_back(right); }
         }
+        direct_monitor().add(converted.data(), unsigned(converted.size() / 2)); // to the jacks at once, when on
         unsigned before = ring.buffered();
         ring.push(converted.data(), unsigned(converted.size() / 2));
         if (checks >= settle_checks) low = std::min(low, before);
