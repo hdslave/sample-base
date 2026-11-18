@@ -3,8 +3,9 @@
 // by driver name, waiting while the host is idle, opening at the host's rate,
 // sample conversion to and from the device's rate and reopening when the host
 // changes rate or stops, and an 18-channel gadget carrying the main mix and
-// stems. Then the input's drift trim against a host clock running fast or
-// slow, and the converter's flatness and alias rejection.
+// stems. Then the input against a host clock running fast or slow: locked
+// through the gadget's feedback, trimmed without it, and unlocked when the
+// host ignores it. Last, the converter's flatness and alias rejection.
 #include "drivers/usb_audio.h"
 #include <alsa/asoundlib.h>
 #include <algorithm>
@@ -34,6 +35,11 @@ static std::mutex pace_lock;
 static std::condition_variable pace_change;
 static unsigned pace_frames = 0; // Handed over, not yet read
 static bool pace_idle = false;   // The capture thread is back for more: all it read is in the ring
+// The gadget's feedback control, when it has one (asynchronous mode): what
+// was last written, and how many writes.
+static std::atomic<bool> pitch_control {false};
+static std::atomic<long> pitch {1000000}, first_pitch {0};
+static std::atomic<unsigned> pitch_writes {0};
 
 extern "C" int __wrap_snd_card_next(int* card) { *card = *card < 0 && gadget ? 0 : -1; return 0; }
 extern "C" int __wrap_snd_ctl_open(snd_ctl_t** ctl, const char* name, int) {
@@ -51,6 +57,13 @@ extern "C" int __wrap_snd_ctl_elem_read(snd_ctl_t*, snd_ctl_elem_value_t* value)
     if (!strcmp(name, "Capture Rate")) snd_ctl_elem_value_set_integer(value, 0, rate);
     else if (!strcmp(name, "Playback Rate")) snd_ctl_elem_value_set_integer(value, 0, playback_rate);
     else return -ENOENT;
+    return 0;
+}
+extern "C" int __wrap_snd_ctl_elem_write(snd_ctl_t*, snd_ctl_elem_value_t* value) {
+    if (!pitch_control || snd_ctl_elem_value_get_interface(value) != SND_CTL_ELEM_IFACE_PCM ||
+        strcmp(snd_ctl_elem_value_get_name(value), "Capture Pitch 1000000")) return -ENOENT;
+    pitch = snd_ctl_elem_value_get_integer(value, 0);
+    if (pitch_writes++ == 0) first_pitch = pitch.load();
     return 0;
 }
 extern "C" int __real_snd_pcm_open(snd_pcm_t**, const char*, snd_pcm_stream_t, int);
@@ -143,6 +156,7 @@ static void input() {
     auto input = usb.stats();
     assert(input.state == UsbStreamState::Running && input.rate == 48000 && input.channels == 2 && input.bits == 32);
     assert(input.opens == 1 && usb.json().find("\"trim_ppm\":") != std::string::npos);
+    assert(!input.locked && input.target == UsbAudioInput::prime_frames && usb.json().find("\"locked\":false,") != std::string::npos);
     { std::lock_guard<std::mutex> lock(name_lock); assert(opened == "hw:CARD=UAC2Gadget,DEV=0"); }
     wait_for([&] { return usb.pull(frames.data(), 128); });
     for (unsigned n = 0; n < 128; ++n) assert(std::abs(frames[2 * n] - 0.5f) < 1e-6f && std::abs(frames[2 * n + 1] + 0.5f) < 1e-6f);
@@ -160,6 +174,23 @@ static void input() {
     usb.stop();
     assert(usb.state() == UsbStreamState::Stopped && pcm_opens == 3 && pcm_closes == 3 && reads > 0);
     rate = 0;
+
+    // With the gadget's feedback control the input locks at once, at the
+    // nominal pitch, and at the device's own rate every frame passes
+    // untouched. Stopping leaves the pitch nominal for whoever streams next.
+    pitch_control = true; pitch = 0; pitch_writes = 0; rate = 44100;
+    usb.start("auto");
+    wait_for([&] { return usb.state() == UsbStreamState::Running; });
+    auto locked = usb.stats();
+    assert(locked.locked && first_pitch == 1000000 && locked.target == UsbAudioInput::locked_target(44100) && locked.target == 280);
+    auto json = usb.json();
+    assert(json.find("\"locked\":true,") != std::string::npos && json.find("\"target\":280,") != std::string::npos);
+    wait_for([&] { return usb.pull(frames.data(), 128); });
+    for (unsigned n = 0; n < 128; ++n) assert(frames[2 * n] == 0.5f && frames[2 * n + 1] == -0.5f);
+    pitch = 0;
+    usb.stop();
+    assert(pitch == 1000000 && !usb.stats().locked && pcm_opens == 4 && pcm_closes == 4);
+    pitch_control = false; rate = 0;
 }
 
 static void output() {
@@ -181,7 +212,7 @@ static void output() {
 
     playback_rate = 48000; // The host starts recording.
     wait_for([&] { return usb.state() == UsbStreamState::Running; });
-    assert(usb.rate() == 48000 && playback_opens == 1 && pcm_opens == 3);
+    assert(usb.rate() == 48000 && playback_opens == 1 && pcm_opens == 4);
     { std::lock_guard<std::mutex> lock(name_lock); assert(opened_playback == "hw:CARD=UAC2Gadget,DEV=0"); }
     auto json = usb.json();
     assert(json.find("\"channels\":2,\"stems\":0,\"bits\":32,") != std::string::npos && json.find("\"trim_ppm\":") != std::string::npos);
@@ -240,44 +271,94 @@ static void deliver(unsigned frames) {
 }
 
 // Two minutes of a host whose clock runs `ppm` fast (slow below 0) against
-// the device's 44.1 kHz, a period at a time, read by an audio thread taking
-// 128 frames as each falls due. Untrimmed, +1500 ppm fills the ring by 66
-// frames a second until it overflows after about 105 s, and -1000 ppm drains
-// it in 17 s and then re-primes every 17 s. Trimmed, the ring never runs dry
-// or overflows, and over the second minute the trim averages the drift and
-// the fill stays near 1,024 + ppm / 2 frames (as the capture thread pushes;
-// a period less once the audio thread has taken its share). Each 250 ms trim
-// wanders by up to ±150 ppm, as the audio thread's 128-frame reads beat
-// against the pushes: well under a cent, and the average is what matters.
-static void input_drift(double ppm) {
+// the device's 44.1 kHz, `chunk` frames at a time, read by an audio thread
+// taking 128 frames as each falls due. A host that `follows` the gadget's
+// feedback sends at the pitch last written. What the second minute saw: the
+// trim and pitch on average, and the ring's fill after each chunk's reads.
+struct Drift { double trim = 0, pitch = 0; unsigned low = ~0u, high = 0; UsbStreamStats settled; };
+static Drift drift(double ppm, unsigned chunk, bool follows) {
     UsbAudioInput usb;
-    gadget = true; rate = 44100; paced = true;
+    gadget = true; rate = 44100; paced = true; pitch = 1000000;
     usb.start("auto");
     wait_for([&] { return usb.state() == UsbStreamState::Running; });
     const double speed = 1 + ppm * 1e-6;
     std::array<float, 2 * 128> block {};
-    double owed = 0, trims = 0; // Device frames due to the audio thread; the second minute's trims added up
-    unsigned low = ~0u, high = 0, samples = 0;
-    for (double host = 0; host < 120 * 44100 * speed; host += 256) {
-        deliver(256);
-        owed += 256 / speed;
+    double owed = 0, trims = 0, pitches = 0; // Device frames due to the audio thread; the second minute's sums
+    unsigned samples = 0;
+    Drift result;
+    for (double host = 0; host < 120 * 44100 * speed; host += chunk) {
+        deliver(chunk);
+        owed += chunk / (speed * (follows ? pitch * 1e-6 : 1.0));
         for (; owed >= 128; owed -= 128) usb.pull(block.data(), 128);
         if (host > 60 * 44100 * speed) {
             auto now = usb.stats();
-            low = std::min(low, now.buffered); high = std::max(high, now.buffered);
-            trims += now.trim_ppm; ++samples;
-            assert(std::abs(now.trim_ppm - ppm) < 150);
+            result.low = std::min(result.low, now.buffered); result.high = std::max(result.high, now.buffered);
+            trims += now.trim_ppm; pitches += now.pitch_ppm; ++samples;
+            if (!now.locked) assert(std::abs(now.trim_ppm - ppm) < 150);
         }
     }
-    auto settled = usb.stats();
+    result.settled = usb.stats();
     usb.stop();
     paced = false; rate = 0;
-    double trim = trims / samples, target = 1024 + ppm / 2;
+    result.trim = trims / samples; result.pitch = pitches / samples;
+    return result;
+}
+
+// Without the feedback control the trim takes up the drift. Untrimmed, +1500
+// ppm fills the ring by 66 frames a second until it overflows after about
+// 105 s, and -1000 ppm drains it in 17 s and then re-primes every 17 s.
+// Trimmed, the ring never runs dry or overflows, and over the second minute
+// the trim averages the drift and the fill stays near 1,024 + ppm / 2 frames
+// (as the capture thread pushes; a period less once the audio thread has
+// taken its share). Each 250 ms trim wanders by up to ±150 ppm, as the audio
+// thread's 128-frame reads beat against the pushes: well under a cent, and
+// the average is what matters.
+static void input_drift(double ppm) {
+    auto run = drift(ppm, 256, false);
+    double target = 1024 + ppm / 2;
     std::printf("drift %+.0f ppm: trim %+.1f ppm on average, fill %u..%u (target %.0f), overflows %u, underruns %u\n", ppm,
-                trim, low, high, target, settled.overflows, settled.underruns);
-    assert(settled.overflows == 0 && settled.underruns == 0);
-    assert(std::abs(trim - ppm) < 10);
-    assert(low > target - 450 && high < target + 150);
+                run.trim, run.low, run.high, target, run.settled.overflows, run.settled.underruns);
+    assert(!run.settled.locked && run.settled.overflows == 0 && run.settled.underruns == 0);
+    assert(std::abs(run.trim - ppm) < 10);
+    assert(run.low > target - 450 && run.high < target + 150);
+}
+
+// With it the host follows the pitch, a 64-frame period at a time as on the
+// MPC: over the second minute the pitch averages the host's drift the other
+// way (within 5 %: here the fill moves only in whole periods, so the lock
+// hunts between two of them), nothing is trimmed, and the ring stays within a
+// few hundred frames of empty without running dry, where trimming holds it
+// near 1,024.
+static void input_locked(double ppm) {
+    pitch_control = true;
+    auto run = drift(ppm, 64, true);
+    pitch_control = false;
+    double expected = (1 / (1 + ppm * 1e-6) - 1) * 1e6;
+    std::printf("locked %+.0f ppm: pitch %+.1f ppm on average (%+.1f wanted), fill %u..%u (target %u), lowest %u, overflows %u, underruns %u\n",
+                ppm, run.pitch, expected, run.low, run.high, run.settled.target, run.settled.lowest, run.settled.overflows,
+                run.settled.underruns);
+    assert(run.settled.locked && run.settled.trim_ppm == 0 && run.trim == 0);
+    assert(run.settled.overflows == 0 && run.settled.underruns == 0);
+    assert(std::abs(run.pitch - expected) < std::max(10.0, std::abs(ppm) / 20)); // The fixture's fill moves in 64-frame steps
+    assert(run.settled.lowest > 0 && run.high < 400);
+}
+
+// A host that takes no notice of the pitch, or one too far off for the lock
+// to catch before the ring strays (USB 2.0 asks a high-speed host for
+// ±500 ppm): the ring drifts off its target, the input unlocks within
+// seconds, the pitch goes back to nominal, and from there it is trimmed as
+// without the control, never running dry.
+static void input_unlocked(double ppm, bool follows) {
+    pitch_control = true;
+    auto run = drift(ppm, 64, follows);
+    pitch_control = false;
+    double target = 1024 + ppm / 2;
+    std::printf("%s %+.0f ppm: unlocked, trim %+.1f ppm on average, fill %u..%u (target %.0f), overflows %u, underruns %u\n",
+                follows ? "too far" : "ignored", ppm, run.trim, run.low, run.high, target, run.settled.overflows, run.settled.underruns);
+    assert(!run.settled.locked && pitch == 1000000 && run.settled.target == UsbAudioInput::prime_frames);
+    assert(run.settled.overflows == 0 && run.settled.underruns == 0);
+    assert(std::abs(run.trim - ppm) < 10);
+    assert(run.low > target - 450 && run.high < target + 150);
 }
 
 // A least-squares fit of a cos + b sin + c, `step` radians a sample: the
@@ -366,6 +447,13 @@ int main() {
     output();
     input_drift(1500);
     input_drift(-1000);
+    input_locked(48);
+    input_locked(-48);
+    input_locked(500);
+    input_locked(-500);
+    input_unlocked(1000, false);
+    input_unlocked(-300, false);
+    input_unlocked(1500, true);
     flatness();
     alias_rejection();
 }

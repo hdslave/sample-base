@@ -205,6 +205,32 @@ inline double drift_trim(double average_fill, double target) {
     return 1.0 + std::clamp((average_fill - target) * gain, -limit, limit);
 }
 
+// The other way to join the two clocks, when the computer takes feedback: a
+// UAC2 gadget in asynchronous mode tells the computer how many frames to send
+// in each microframe, scaled by its "Capture Pitch 1000000" control, so the
+// AK4558 sets the pace and nothing is converted. This turns the ring's average
+// fill into that pitch, in parts per million over the nominal rate: a ring
+// above `target` asks for fewer frames, one below it for more. Proportional,
+// 5 ppm a frame, plus the integral of the same over 20 seconds, so a steady
+// drift is taken up and the fill settles on `target` itself rather than off
+// it, which matters with a ring of a few hundred frames. At 44.1 kHz it
+// settles in about 5 seconds without overshooting much. The pitch stays within
+// ±0.2 %.
+class PitchLock {
+public:
+    void reset() { integral = 0; }
+    // The ring's average fill over the last `seconds`; returns the pitch in ppm.
+    int update(double average_fill, double target, double seconds) {
+        constexpr double gain = 5.0, reset_time = 20.0, limit = 2000.0; // ppm a frame, seconds, ppm
+        double error = average_fill - target;
+        integral = std::clamp(integral + gain * error * seconds / reset_time, -limit, limit);
+        return int(std::lround(std::clamp(-(gain * error + integral), -limit, limit)));
+    }
+
+private:
+    double integral = 0; // ppm
+};
+
 // Float frames of `Channels` interleaved samples (stereo unless stated) from
 // one producer thread to one consumer thread, either
 // way round the audio thread. The consumer waits until `prime` frames are
