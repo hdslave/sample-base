@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <thread>
 
@@ -30,12 +31,16 @@ class DirectMonitor {
 public:
     static constexpr unsigned min_ahead = 32, ahead = 96, max_ahead = 192, nudge = 16;
 
-    // Any thread: whether USB-C in plays direct now, and at what gain (the
-    // app's main volume and its own level). Off, add() leaves the buffer alone.
-    void set(bool on, float gain) {
-        gain_.store(gain, std::memory_order_relaxed);
+    // Any thread: whether USB-C in plays direct now, and at what gain each
+    // side (the app's main volume and its own level). add() eases to it over
+    // about 5 ms, and from it to silence when turned off, so neither clicks;
+    // silent and off, it leaves the buffer alone.
+    void set(bool on, float left, float right) {
+        gain_l.store(left, std::memory_order_relaxed);
+        gain_r.store(right, std::memory_order_relaxed);
         on_.store(on, std::memory_order_relaxed);
     }
+    void set(bool on, float gain) { set(on, gain, gain); }
     bool on() const { return on_.load(std::memory_order_relaxed); }
 
     // Audio thread: the codec's playback buffer, interleaved stereo S32,
@@ -73,7 +78,8 @@ public:
     // USB-C input thread: `count` stereo float frames just read, at the
     // audio device's rate.
     void add(const float* frames, unsigned count) {
-        if (!on_.load(std::memory_order_relaxed)) { placed = false; return; }
+        const bool on = on_.load(std::memory_order_relaxed);
+        if (!on && eased_l == 0 && eased_r == 0) { placed = false; return; }
         busy_.store(true, std::memory_order_seq_cst);
         int32_t* buffer = buffer_.load(std::memory_order_seq_cst);
         uint64_t written = 0, played = 0; int64_t ns = 0; bool valid = false; unsigned epoch = 0;
@@ -89,7 +95,7 @@ public:
                 valid = false;
             }
         }
-        if (!buffer || !valid) { placed = false; busy_.store(false, std::memory_order_release); return; }
+        if (!buffer || !valid) { placed = false; eased_l = eased_r = 0; busy_.store(false, std::memory_order_release); return; }
         if (epoch != epoch_seen) { placed = false; epoch_seen = epoch; }
         const int64_t now = int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
         const uint64_t dma = played + uint64_t(std::max<int64_t>(0, now - ns) * int64_t(rate_) / 1000000000);
@@ -103,15 +109,18 @@ public:
         const bool repeat = lead < ahead - nudge && count > 1, skip = lead > ahead + nudge && count > 1;
         if (repeat || skip) nudges_.fetch_add(1, std::memory_order_relaxed);
         const unsigned out = count + (repeat ? 1 : 0) - (skip ? 1 : 0);
-        const float gain = gain_.load(std::memory_order_relaxed) * 2147483648.0f;
+        const float aim_l = on ? gain_l.load(std::memory_order_relaxed) : 0.0f, aim_r = on ? gain_r.load(std::memory_order_relaxed) : 0.0f;
+        const float ease = 1.0f - std::exp(-1.0f / (0.005f * float(rate_))); // a 5 ms time constant
         for (unsigned f = 0; f < out; ++f) {
             uint64_t at = cursor + f;
             if (at >= written) { short_.fetch_add(1, std::memory_order_relaxed); break; } // the app has not written it yet
             const unsigned from = repeat ? (f ? f - 1 : 0) : f + (skip ? 1 : 0);
+            eased_l += (aim_l - eased_l) * ease; eased_r += (aim_r - eased_r) * ease;
             int32_t* frame = buffer + size_t(at % frames_) * 2;
-            frame[0] = mix(frame[0], frames[2 * from] * gain);
-            frame[1] = mix(frame[1], frames[2 * from + 1] * gain);
+            frame[0] = mix(frame[0], frames[2 * from] * eased_l * 2147483648.0f);
+            frame[1] = mix(frame[1], frames[2 * from + 1] * eased_r * 2147483648.0f);
         }
+        if (!on && eased_l < 1e-5f && eased_r < 1e-5f) eased_l = eased_r = 0; // faded out: done until on again
         cursor += out;
         added_.fetch_add(count, std::memory_order_relaxed);
         busy_.store(false, std::memory_order_release);
@@ -135,7 +144,7 @@ private:
     std::atomic<int32_t*> buffer_ {nullptr};
     unsigned frames_ = 0, rate_ = 48000; // set before buffer_ is published
     std::atomic<bool> on_ {false}, busy_ {false}, valid_ {false};
-    std::atomic<float> gain_ {0.0f};
+    std::atomic<float> gain_l {0.0f}, gain_r {0.0f};
     std::atomic<unsigned> seq_ {0}, epoch_ {0};
     std::atomic<uint64_t> written_ {0}, played_ {0};
     std::atomic<int64_t> ns_ {0};
@@ -144,6 +153,7 @@ private:
     // The input thread's own.
     uint64_t cursor = 0;
     bool placed = false;
+    float eased_l = 0, eased_r = 0; // the gains as the last frame played them
     unsigned epoch_seen = ~0u;
 };
 
