@@ -117,6 +117,11 @@ public:
     // mix (channels 3 to 18), or null for silence there. The app owns the
     // block and writes it in render().
     virtual const UsbStems* stems() const { return nullptr; }
+    // Audio thread, right after each render(): the main mix a computer
+    // records over USB-C (channels 1 and 2) when it is not what the jacks
+    // play, such as the mix before the app's own volume, or null for the
+    // block render() wrote. The app owns the block and writes it in render().
+    virtual const AudioBlock* usb_mix() const { return nullptr; }
 
     // MIDI thread: a channel message from the control surface. Wheel Push
     // never arrives while it returns to the stock app.

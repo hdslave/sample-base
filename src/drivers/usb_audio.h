@@ -102,7 +102,8 @@ struct UsbStems { float track[usb_stem_count][usb_stem_frames]; };
 
 // What the computer records from the MPC: whatever the audio thread hands to
 // push(), which the runtime does with every block an app renders, so the
-// computer hears what the jacks play, after the app's own volume. A separate
+// computer hears what the jacks play, after the app's own volume, unless the
+// app gives a mix of its own (App::usb_mix()). A separate
 // thread finds the gadget, waits for the computer to start recording, then
 // converts the device's rate to the computer's and writes it. drift_trim() keeps
 // the ring near `prime_frames` by nudging that conversion, so a long

@@ -308,7 +308,7 @@ bytes a microframe, under high speed's 1,024. The channel order is fixed:
 
 | Channels | Carry |
 | --- | --- |
-| 1–2 | The main mix, exactly as before |
+| 1–2 | The main mix, exactly as before, or `App::usb_mix()` |
 | 3–18 | Track 1–16 stems from `App::stems()`, silent for apps without stems |
 
 The stems share the main mix's ring, rate conversion and drift trim, so all

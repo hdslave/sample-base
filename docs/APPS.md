@@ -91,6 +91,7 @@ so a pad is read the moment it arrives; keep MIDI hooks short.
 | `audio_opened(format)` | audio | Before the first `render()` of each opened device: the rate and frames queued it runs at. |
 | `screen_mirror()` | any | Optional: whether the screen is offered to a computer as a USB webcam, and at which size (`ScreenMirror::widths` / `heights`: the screen times 1, 2, 3 or 4, 320 × 240 to 1280 × 960) and rate (30 or 60 fps). The runtime acts on a change within a frame or two; on, off or another size rebinds the USB gadget (about a second without USB). Know it from the constructor, as `audio_format()`. `session().mirror` says how it goes (state, size, pictures sent). The default is off, and a webcam an earlier app left is taken out ([HARDWARE.md](HARDWARE.md), Screen Mirror). |
 | `stems()` | audio | Right after each `render()`. Optional: a `UsbStems` block (`drivers/usb_audio.h`) the app wrote in `render()`, one mono float channel per track, which a computer records on USB-C channels 3–18. The default, null, sends silence there. |
+| `usb_mix()` | audio | Right after each `render()`. Optional: an `AudioBlock` the app wrote in `render()` for USB-C channels 1 and 2 when the computer should not record what the jacks play, such as the mix before the app's volume. The default, null, sends the `render()` output. |
 | `surface(event)` | MIDI | Every control-surface message. `event.pad` is 0–15 for a pad's note-on, note-off or pressure; `event.input` names a button or control (`surface/controls.h`); `event.syncing` marks the startup position replies; `event.timestamp_ns` is when it came in (CLOCK_MONOTONIC, as a MIDI packet's), to place a hit to the frame. |
 | `midi(port, packet)` | MIDI | Every packet from an external port (DIN or USB MIDI), including clock and SysEx. |
 | `midi_lost()` | MIDI | An external MIDI input disappeared; silence its notes. |
@@ -137,9 +138,9 @@ itself. The system demo (`src/demos/system/`) reads all of these.
   all work for every app (see [HARDWARE.md](HARDWARE.md)).
 - **USB-C audio out:** whenever a computer records from the MPC over USB-C,
   it gets exactly what `render()` wrote, after the app's own volume, on
-  channels 1 and 2, and whatever `stems()` returns on 3 to 18. The app does
-  nothing for the main mix; `--usb-output off` or `usb-output off` turns it
-  off.
+  channels 1 and 2 (or what `usb_mix()` returns), and whatever `stems()`
+  returns on 3 to 18. The app does nothing for the main mix;
+  `--usb-output off` or `usb-output off` turns it off.
 - **Lights:** the runtime sends only what changed, at most 48 messages per
   pass, and on exit turns off every light the app set.
 - **Remote prompt:** while a tool such as `tools/capture_controls.py` shows
