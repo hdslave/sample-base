@@ -21,6 +21,9 @@ FILES="sample-base restore-stock.sh"
 [ ! -f "$DIR/sd-update.sh" ] || FILES="$FILES sd-update.sh"
 (cd "$DIR" && cp $FILES "$RELEASE/")
 (cd "$DIR" && sha256sum $FILES) | (cd "$RELEASE" && sha256sum -c -)
+# The card folder they came from, for the app's files left there: a boot menu
+# (SampleBoot's autorun/mods/<name>/) may keep it anywhere on the card.
+(cd "$DIR" && pwd) > "$RELEASE/sd-folder"
 chmod 755 "$RELEASE/sample-base"
 "$RELEASE/sample-base" --self-test "$RELEASE/test.wav" || { echo 'Self-test failed; stock left running' >&2; exit 1; }
 OPTION=""
