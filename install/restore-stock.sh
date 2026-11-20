@@ -96,26 +96,19 @@ if [ -r "$SAVED" ] && read -r FUNCTION MASK RATE < "$SAVED"; then
     fi
     rm -f "$SAVED"
 fi
-# An app may limit the CPUs' speed and dim the backlight (src/drivers/platform.h,
-# cpu_limit() and brightness()); both go back as the app leaves, but one killed
-# leaves them as they were then. The stock app gets what was there before the
-# first change, kept a line a policy or backlight in these files.
-for SAVED_VALUES in /run/sample-base-cpu-limit:scaling_max_freq /run/sample-base-backlight:brightness; do
-    SAVED_FILE=${SAVED_VALUES%%:*}
-    ATTRIBUTE=${SAVED_VALUES##*:}
-    [ -r "$SAVED_FILE" ] || continue
+# An app may dim the backlight (src/drivers/platform.h, brightness()); it goes
+# back as the app leaves, but one killed leaves it as it was then. The stock
+# app gets the level from before the first change, kept in this file.
+SAVED=/run/sample-base-backlight
+if [ -r "$SAVED" ]; then
     while read -r DEVICE VALUE; do
         case "$DEVICE" in *..*) continue ;; esac
-        case "$ATTRIBUTE:$DEVICE" in
-            scaling_max_freq:/sys/devices/system/cpu/cpufreq/policy[0-9]*) ;;
-            brightness:/sys/class/backlight/?*) ;;
-            *) continue ;;
-        esac
+        case "$DEVICE" in /sys/class/backlight/?*) ;; *) continue ;; esac
         case "$VALUE" in ''|*[!0-9]*) continue ;; esac
-        { [ ! -w "$DEVICE/$ATTRIBUTE" ] || echo "$VALUE" > "$DEVICE/$ATTRIBUTE"; } 2>/dev/null || true
-    done < "$SAVED_FILE"
-    rm -f "$SAVED_FILE"
-done
+        { [ ! -w "$DEVICE/brightness" ] || echo "$VALUE" > "$DEVICE/brightness"; } 2>/dev/null || true
+    done < "$SAVED"
+    rm -f "$SAVED"
+fi
 # sample-base sets the codec link's pmdown_time to 0 only while its stream
 # ends (src/drivers/codec_power.h); one killed right then leaves it there.
 # The kernel's own 5000 ms goes back for the stock app.

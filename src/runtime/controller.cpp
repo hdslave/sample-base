@@ -29,7 +29,7 @@ void Controller::run(Session& session, ControlServer& server) {
     std::thread io_thread;
     try {
         io_thread = std::thread([&] { run_midi(session); });
-        platform.recover(); // the CPUs' limit and the backlight, had an app been killed with them changed
+        platform.recover(); // the backlight, had an app been killed with it changed
         while (session.running.load()) {
             record_surface_packets();
             MidiCatalog update;

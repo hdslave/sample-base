@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
-#include <utility>
 #include <vector>
 
 std::string json_string(const std::string& value);
@@ -33,10 +32,6 @@ MemoryReading parse_meminfo(const std::string& text);
 struct SupplyReading { std::string name, type; int online = -1; long microvolts = -1; };
 struct ThermalReading { std::string type; long millidegrees = 0; };
 struct BacklightReading { long brightness = -1, maximum = -1; };
-// The CPUs' speed as cpufreq has it, in kHz: the fastest the policy allows now (`limit`), the fastest the hardware
-// goes (`top`), the speed it runs at, and each speed it can take, slowest first. -1 or empty where the kernel has
-// no cpufreq.
-struct CpuSpeedReading { long limit_khz = -1, top_khz = -1, now_khz = -1; std::string governor; std::vector<long> steps_khz; };
 struct StorageSpace { std::string device, path, type; bool read_only = true; uint64_t free_bytes = 0, total_bytes = 0; };
 
 // All file access belongs on the control/service thread. Roots are injectable
@@ -48,21 +43,12 @@ public:
     ~Platform();
     std::string json() const;
     bool brightness(unsigned value);
-    // The CPUs' speed limit: every cpufreq policy's scaling_max_freq set to the fastest speed it has at or under
-    // `khz` (0: its top speed, no limit). The governor is left alone: under the kernel's `performance` the CPUs
-    // then run at the limit steadily, with no switching for an audio thread to meet. On the MPC Sample the four
-    // cores share one policy; 1416000 is the fastest speed at the lowest CPU voltage (docs/HARDWARE.md, "CPU
-    // speed"). The speed before the first change comes back on normal exit, and is kept in
-    // <run>/sample-base-cpu-limit meanwhile, so install/restore-stock.sh puts it back after a crash. Returns
-    // whether every policy has the limit asked for; false without cpufreq.
-    bool cpu_limit(long khz);
-    CpuSpeedReading cpu_speed() const;                // The first cpufreq policy
-    // What an earlier process changed and was killed before it could put back: the CPUs' limit and the backlight
-    // as their notes in <run> have them, as install/restore-stock.sh would. That script runs when an app's service
-    // stops, but not when one app is swapped for another or updated in place, and a process killed then leaves
-    // both changed with nobody to undo them: the next process would take the changed values for the stock ones.
-    // For the runtime's one long-lived Platform, once as it starts (Controller::run()). It does nothing once this
-    // Platform has changed either itself: the notes are then its own.
+    // What an earlier process changed and was killed before it could put back: the backlight, as its note in <run>
+    // has it, as install/restore-stock.sh would. That script runs when an app's service stops, but not when one
+    // app is swapped for another or updated in place, and a process killed then leaves the backlight changed with
+    // nobody to undo it: the next process would take the changed level for the stock one. For the runtime's one
+    // long-lived Platform, once as it starts (Controller::run()). It does nothing once this Platform has changed
+    // the backlight itself: the note is then its own.
     void recover();
 
     std::vector<SupplyReading> supplies() const;      // Every power supply
@@ -78,6 +64,4 @@ private:
     std::filesystem::path sys, proc, run;
     std::filesystem::path changed_backlight;
     std::string saved_brightness;
-    std::vector<std::pair<std::filesystem::path, std::string>> saved_cpu_limits; // each policy changed, and its limit before
-    void restore_cpu_limits();
 };

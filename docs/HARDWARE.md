@@ -51,7 +51,7 @@ The kernel sources remain under their own upstream licences.
 | USB host MIDI | Kernel USB audio/MIDI driver | Input/output subdevices are discovered and reopened after hotplug; disconnect and read failure panic the demo synth |
 | USB audio | Kernel ALSA PCM devices; USB-C device audio from the `UAC2_Gadget` card (`CONFIG_USB_CONFIGFS_F_UAC2`) | Enumerated PCM endpoints can be selected with `--audio-output` and `--audio-input`; `UsbAudioInput` finds the gadget by driver name, waits for the host and delivers its capture stream at the device's rate, trimmed against clock drift; `UsbAudioOutput` sends every app's output, and its stems, to a computer recording from the gadget; no fixed USB card number is assumed |
 | Display | SPI3 ST7796S-compatible panel (`vitek,vt024k-zn01`, inMusic's `st7796s` tinydrm driver), natively 240 × 320 portrait, rotation 270 (`MADCTL` `MY` \| `MV`), SPI at 25 MHz; no vsync (the mode has no refresh rate, no tearing-effect line, and no read line: every register reads `ff`). The panel refreshes from its memory a gate line (a screen column) at a time, while the stock driver writes a screen row at a time across them, so a moving vertical line written as the refresh passes shows broken in two | `Display` first moves the panel to sample-base's own driver (`kernel/panel/sample_base_panel.c`, after `st7796s.c`: the same init without `MV`, a 240 × 320 portrait mode), built against the MPC's kernel by `tools/build_kernel_modules.sh`, embedded in the binary and loaded from memory (`src/drivers/panel_driver.h`); it binds `spi3.0` by `driver_override` and gives it back to `st7796s` on exit, and `install/restore-stock.sh` does so after a crash. The buffer is then the screen turned, each write runs along the refresh, and nothing on the screen can tear across a line. It pushes JUCE software images from a worker thread, sending only what changed as damage clips (`display_damage::plan`): a whole screen takes about 54 ms, small changes under 5 ms; `screen_clips` counts the clips. On the stock driver (a build without the module, or one that will not load) a narrow tall change, a moving line, goes a column at a time instead. It attempts to restore the previous CRTC on release |
-| Backlight | PWM4, seven brightness indices, maximum index 6 | `Platform` discovers the actual sysfs range, validates explicit changes and restores its original brightness on normal exit |
+| Backlight | PWM4, seven brightness indices, maximum index 6 | `Platform` discovers the actual sysfs range, validates explicit changes and restores its original brightness on normal exit. The level before the first change is also kept in `/run/sample-base-backlight`: `install/restore-stock.sh` puts it back after a crash, and `Platform::recover()` as the runtime starts, for an app killed while it was swapped or updated in place (when that script does not run) |
 | Power | `mains-power`, ADC supply voltage, kernel power handling | `Platform` reads actual power-supply attributes; `SystemServices` observes logind sleep/shutdown notifications and requests a clean app exit |
 | SD/eMMC/removable storage | Kernel block devices and the existing `edisksd` service | Mounted paths, read-only status and free space; D-Bus volume metadata and explicit mount/unmount requests by service object path |
 | Sync input/output | GPIO lines named `CV_CLK_IN` / `CV_CLK_OUT` | Opt-in `ClockIo`: timestamped rising/falling input edges, loss counts and explicit output levels; kernel-owned lines are never taken over |
@@ -59,37 +59,8 @@ The kernel sources remain under their own upstream licences.
 | SD card access | The gadget's configfs `mass_storage` function (`CONFIG_USB_CONFIGFS_MASS_STORAGE`) and `edisksd` | `CardShare` lends the removable card to a computer as a USB drive beside audio, MIDI and networking, and takes it back (see "SD card access") |
 | Thermal/network status | Kernel thermal zones and network interfaces | Read-only temperatures and interface state; no radio, network or thermal policy changes |
 | CPU and memory | `/proc/stat` and `/proc/meminfo` | `Platform` reads busy and total CPU time per core and total and available memory; read-only |
-| CPU speed | cpufreq: one policy for the four cores; the kernel's governor is `performance` | `Platform::cpu_speed()` reads the policy; `cpu_limit()` sets its `scaling_max_freq`, opt-in, and puts it back on exit ("CPU speed") |
+| CPU speed | cpufreq: one policy for the four cores; the kernel's governor is `performance` | Left alone. The four Cortex-A55 cores stay at their top speed, 1.8 GHz, whether or not there is work, as under the stock app |
 | Session recovery | Existing stock systemd service | RAM-only application and recovery script; wheel Push, remote stop, failure and crash restore the existing service; shutdown does not restart it |
-
-## CPU speed
-
-The MPC's kernel (inMusic's `az07_defconfig`) starts with the `performance` cpufreq governor, so the four
-Cortex-A55 cores stay at their top speed, 1.8 GHz at 1.10 V, whether or not there is work. The cores share one
-clock and one supply (`vdd_cpu`), so there is one policy. Its operating points, from `rk356x.dtsi` in the same
-release:
-
-| Speed | Supply |
-| --- | --- |
-| 408, 600, 816, 1104 and 1416 MHz | 0.900 V |
-| 1608 MHz | 0.975 V |
-| 1800 MHz | 1.100 V |
-
-Switching energy goes with the square of the supply, so the same work at 1416 MHz takes about two thirds of the
-energy it takes at 1800 MHz, and about a quarter more time. Under 1416 MHz the supply falls no further: slower
-speeds save nothing more for a fixed amount of work. These figures follow from the table; nothing has been
-measured on a device.
-
-`Platform::cpu_limit(khz)` sets each policy's `scaling_max_freq` to its fastest speed at or under `khz` (0: no
-limit). It leaves the governor alone: under `performance` the cores then hold that speed, with no switching for
-an audio thread to meet. (`schedutil`, the only other governor in the kernel, would raise the speed whenever a
-real-time thread runs and drop it after, hundreds of times a second.) The limit is the app's choice, never the
-base's: nothing calls it unless an app does. The limit before the first change is written to
-`/run/sample-base-cpu-limit`, goes back when `Platform` is destroyed, and is put back by
-`install/restore-stock.sh` after a crash. The backlight's level before an app's first change is kept the same
-way, in `/run/sample-base-backlight`. That script does not run when one app is swapped for another or updated in
-place, so the runtime also calls `Platform::recover()` as it starts: it puts back what the notes hold, should the
-app before have been killed with either changed.
 
 ## Threading and extension points
 

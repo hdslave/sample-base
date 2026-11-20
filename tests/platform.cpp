@@ -114,64 +114,31 @@ int main(int argc, char** argv) {
     }
     std::string restored; std::ifstream(root / "sys/class/backlight/panel/brightness") >> restored;
     assert(restored == "4" && !std::filesystem::exists(root / "run/sample-base-backlight"));
-    { // The CPUs' speed limit: the fastest step at or under what is asked, the limit before kept for a crash, back on exit.
-        auto policy = root / "sys/devices/system/cpu/cpufreq/policy0";
-        write(policy / "scaling_available_frequencies", "408000 600000 816000 1104000 1416000 1608000 1800000 \n");
-        write(policy / "cpuinfo_max_freq", "1800000\n");
-        write(policy / "cpuinfo_min_freq", "408000\n");
-        write(policy / "scaling_max_freq", "1800000\n");
-        write(policy / "scaling_cur_freq", "1800000\n");
-        write(policy / "scaling_governor", "performance\n");
-        std::filesystem::create_directories(root / "run");
-        auto limit_now = [&] { std::string value; std::ifstream(policy / "scaling_max_freq") >> value; return value; };
-        {
-            Platform platform(root / "sys", root / "proc", root / "run");
-            auto speed = platform.cpu_speed();
-            assert(speed.limit_khz == 1800000 && speed.top_khz == 1800000 && speed.governor == "performance" && speed.steps_khz.size() == 7);
-            assert(platform.cpu_limit(0) && !std::filesystem::exists(root / "run/sample-base-cpu-limit")); // already there: nothing touched
-            assert(platform.cpu_limit(1416000) && limit_now() == "1416000");
-            std::string kept_policy, kept_limit;
-            std::ifstream(root / "run/sample-base-cpu-limit") >> kept_policy >> kept_limit;
-            assert(kept_policy == policy.string() && kept_limit == "1800000");
-            assert(platform.cpu_limit(1500000) && limit_now() == "1416000"); // between two steps: the one under it
-            assert(platform.cpu_limit(1700000) && limit_now() == "1608000");
-            assert(platform.cpu_limit(1000) && limit_now() == "408000");     // never under the slowest
-            assert(platform.cpu_limit(0) && limit_now() == "1800000");
-            assert(platform.cpu_limit(1416000) && platform.cpu_speed().limit_khz == 1416000);
-            std::string line; unsigned lines = 0;
-            for (std::ifstream note(root / "run/sample-base-cpu-limit"); std::getline(note, line);) ++lines;
-            assert(lines == 1); // the limit before the first change, once
-        }
-        assert(limit_now() == "1800000" && !std::filesystem::exists(root / "run/sample-base-cpu-limit"));
-    }
-    { // A process killed with the limit and the backlight changed left its notes: the next one puts both back.
-        auto policy = root / "sys/devices/system/cpu/cpufreq/policy0", panel = root / "sys/class/backlight/panel";
+    { // A process killed with the backlight changed left its note: the next one puts the level back.
+        auto panel = root / "sys/class/backlight/panel";
         auto read = [](const std::filesystem::path& path) { std::string value; std::ifstream(path) >> value; return value; };
-        write(policy / "scaling_max_freq", "1416000\n");
         write(panel / "brightness", "1\n");
         // Lines of another kind, or with no number, are passed over: nothing is written for them.
-        write(root / "run/sample-base-cpu-limit", policy.string() + " 1800000\n" + panel.string() + " 9\n/etc/hostname 1\n");
-        write(root / "run/sample-base-backlight", panel.string() + " 4\n" + panel.string() + " x\n" + (root / "sys/class/backlight/none").string() + " 2\n");
+        write(root / "run/sample-base-backlight", panel.string() + " 4\n" + panel.string() + " x\n" + (root / "sys/class/backlight/none").string() + " 2\n"
+              + (root / "sys/class/leds/x").string() + " 3\n");
         {
             Platform platform(root / "sys", root / "proc", root / "run");
             platform.recover();
-            assert(read(policy / "scaling_max_freq") == "1800000" && read(panel / "brightness") == "4");
-            assert(!std::filesystem::exists(root / "run/sample-base-cpu-limit") && !std::filesystem::exists(root / "run/sample-base-backlight"));
-            assert(!std::filesystem::exists(panel / "scaling_max_freq") && !std::filesystem::exists(root / "sys/class/backlight/none"));
-            // A limit of this one's own is not a thing left over: recover() leaves it and its note.
-            assert(platform.cpu_limit(1416000));
+            assert(read(panel / "brightness") == "4" && !std::filesystem::exists(root / "run/sample-base-backlight"));
+            assert(!std::filesystem::exists(root / "sys/class/backlight/none") && !std::filesystem::exists(root / "sys/class/leds/x"));
+            // A level of this one's own is not a thing left over: recover() leaves it and its note.
+            assert(platform.brightness(1));
             platform.recover();
-            assert(read(policy / "scaling_max_freq") == "1416000" && std::filesystem::exists(root / "run/sample-base-cpu-limit"));
+            assert(read(panel / "brightness") == "1" && std::filesystem::exists(root / "run/sample-base-backlight"));
         }
-        assert(read(policy / "scaling_max_freq") == "1800000" && !std::filesystem::exists(root / "run/sample-base-cpu-limit"));
+        assert(read(panel / "brightness") == "4" && !std::filesystem::exists(root / "run/sample-base-backlight"));
         Platform nothing(root / "sys", root / "proc", root / "run");
-        nothing.recover(); // no notes: nothing to do
-        assert(read(policy / "scaling_max_freq") == "1800000" && read(panel / "brightness") == "4");
+        nothing.recover(); // no note: nothing to do
+        assert(read(panel / "brightness") == "4");
     }
     Platform absent(root / "missing", root / "missing");
     assert(!absent.brightness(1) && absent.json().find("\"power\":[]") != std::string::npos);
     assert(absent.supplies().empty() && absent.temperatures().empty() && absent.storage().empty() && absent.cpu_times().empty());
     assert(absent.backlight().brightness == -1 && absent.backlight().maximum == -1 && absent.usb_state().empty());
     assert(absent.memory().total_kb == 0);
-    assert(!absent.cpu_limit(1416000) && absent.cpu_speed().limit_khz == -1 && absent.cpu_speed().steps_khz.empty());
 }
