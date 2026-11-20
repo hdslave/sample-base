@@ -119,17 +119,25 @@ int run_app(App& app, const Options& options) {
         // This thread draws the screen: the remote prompt while one is shown,
         // otherwise the app. present() waits while the panel still receives
         // the last frame, so the panel's SPI push sets the rate, and frames
-        // never come closer than busy_interval (about the panel's own scan).
-        // Drawing costs CPU even when nothing moves, so once the screen has
-        // stood still for idle_after the loop draws every idle_interval, and
-        // any control or remote input wakes it at once.
+        // never come closer than fast_interval (about the panel's own scan).
+        // Every frame is a whole draw() whatever changed, so the loop draws
+        // only as often as what is on the screen asks:
+        //   a control used in the last hands_on   every fast_interval (60 a second)
+        //   the picture changing by itself        every App::frame_interval()
+        //   a few frames after it last changed    slowing to settle_interval
+        //   standing still                        every idle_interval (10 a second)
+        // Between frames it sleeps on session.wake: a control, a note from
+        // outside or a screenshot asked for draws the next frame at once.
         using ScreenClock = std::chrono::steady_clock;
-        constexpr std::chrono::microseconds busy_interval {16667}, idle_interval {100000}, idle_after {500000}, input_poll {4000};
-        auto inputs = [&] { return session.hardware_events.load() + session.external_events.load() + session.synthetic_events.load(); };
+        constexpr std::chrono::microseconds fast_interval {16667}, settle_interval {50000}, idle_interval {100000}, hands_on {300000};
+        constexpr unsigned settle_after = 3, idle_after = 8; // frames in a row that changed nothing
         juce::Image image(juce::Image::ARGB, screen_width, screen_height, true);
-        auto next = ScreenClock::now(), last_change = next;
+        uint32_t seen = session.wake.events.load();
+        auto last_input = ScreenClock::now() - hands_on; // none yet
+        unsigned still = 0;
         while (session.running.load() && !interrupted && ScreenClock::now() < deadline) {
             auto start = ScreenClock::now();
+            bool changed = false;
             if (auto wanted = app.audio_format(); wanted != requested) { requested = wanted; session.audio_reopen.store(true); }
             if (auto wanted = app.screen_mirror(); mirror && wanted != mirror_mode) { mirror_mode = wanted; mirror->set_mode(wanted); }
             if (display) {
@@ -141,20 +149,28 @@ int run_app(App& app, const Options& options) {
                     else app.draw(g);
                 }
                 auto drawn = ScreenClock::now();
-                bool changed = display->present(image);
-                if (changed) last_change = drawn;
+                changed = display->present(image);
                 if (mirror && (changed || mirror->wants_frame())) mirror->offer(image); // the remote prompt too: what the panel shows
                 record_screen(session.screen, display->stats(), drawn - start);
                 if (mirror) record_mirror(session.mirror, mirror->status());
                 if (session.screenshot.exchange(false)) save_png(image, options.runtime + "/screen.png");
             }
-            bool idle = !display || start - last_change > idle_after;
-            next = std::max(next + (idle ? idle_interval : busy_interval), ScreenClock::now() - busy_interval);
-            if (!idle) { std::this_thread::sleep_until(next); continue; }
-            auto seen = inputs();
-            while (ScreenClock::now() < next && inputs() == seen && session.running.load() && !interrupted && !session.screenshot.load())
-                std::this_thread::sleep_for(input_poll);
-            if (inputs() != seen) { last_change = ScreenClock::now(); next = last_change; }
+            still = changed ? 0 : std::min(still + 1, idle_after);
+            const bool hands = start - last_input < hands_on;
+            const auto moving = std::clamp(app.frame_interval(), fast_interval, idle_interval);
+            // A hand on the controls: the fast rate, whether or not this frame changed. What a control does often
+            // shows a frame or more after it (the engine answers a block later), so a still frame is no reason to
+            // slow while the hand is there.
+            const auto interval = !display ? idle_interval : hands ? fast_interval
+                                : still >= idle_after ? idle_interval : still >= settle_after ? std::max(moving, settle_interval) : moving;
+            // Asleep until the frame is due. A control wakes it: that frame at once, though never nearer the last
+            // than the fast rate. `seen` is from before this frame was drawn, so a control used while it was (which
+            // the picture may have missed) counts too, and is not left waiting out a still screen's interval.
+            if (session.wake.sleep_until(start + interval, seen)) {
+                seen = session.wake.events.load();
+                last_input = ScreenClock::now();
+                std::this_thread::sleep_until(start + fast_interval);
+            }
         }
     } catch (...) {
         session.running.store(false);

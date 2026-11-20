@@ -59,7 +59,37 @@ The kernel sources remain under their own upstream licences.
 | SD card access | The gadget's configfs `mass_storage` function (`CONFIG_USB_CONFIGFS_MASS_STORAGE`) and `edisksd` | `CardShare` lends the removable card to a computer as a USB drive beside audio, MIDI and networking, and takes it back (see "SD card access") |
 | Thermal/network status | Kernel thermal zones and network interfaces | Read-only temperatures and interface state; no radio, network or thermal policy changes |
 | CPU and memory | `/proc/stat` and `/proc/meminfo` | `Platform` reads busy and total CPU time per core and total and available memory; read-only |
+| CPU speed | cpufreq: one policy for the four cores; the kernel's governor is `performance` | `Platform::cpu_speed()` reads the policy; `cpu_limit()` sets its `scaling_max_freq`, opt-in, and puts it back on exit ("CPU speed") |
 | Session recovery | Existing stock systemd service | RAM-only application and recovery script; wheel Push, remote stop, failure and crash restore the existing service; shutdown does not restart it |
+
+## CPU speed
+
+The MPC's kernel (inMusic's `az07_defconfig`) starts with the `performance` cpufreq governor, so the four
+Cortex-A55 cores stay at their top speed, 1.8 GHz at 1.10 V, whether or not there is work. The cores share one
+clock and one supply (`vdd_cpu`), so there is one policy. Its operating points, from `rk356x.dtsi` in the same
+release:
+
+| Speed | Supply |
+| --- | --- |
+| 408, 600, 816, 1104 and 1416 MHz | 0.900 V |
+| 1608 MHz | 0.975 V |
+| 1800 MHz | 1.100 V |
+
+Switching energy goes with the square of the supply, so the same work at 1416 MHz takes about two thirds of the
+energy it takes at 1800 MHz, and about a quarter more time. Under 1416 MHz the supply falls no further: slower
+speeds save nothing more for a fixed amount of work. These figures follow from the table; nothing has been
+measured on a device.
+
+`Platform::cpu_limit(khz)` sets each policy's `scaling_max_freq` to its fastest speed at or under `khz` (0: no
+limit). It leaves the governor alone: under `performance` the cores then hold that speed, with no switching for
+an audio thread to meet. (`schedutil`, the only other governor in the kernel, would raise the speed whenever a
+real-time thread runs and drop it after, hundreds of times a second.) The limit is the app's choice, never the
+base's: nothing calls it unless an app does. The limit before the first change is written to
+`/run/sample-base-cpu-limit`, goes back when `Platform` is destroyed, and is put back by
+`install/restore-stock.sh` after a crash. The backlight's level before an app's first change is kept the same
+way, in `/run/sample-base-backlight`. That script does not run when one app is swapped for another or updated in
+place, so the runtime also calls `Platform::recover()` as it starts: it puts back what the notes hold, should the
+app before have been killed with either changed.
 
 ## Threading and extension points
 

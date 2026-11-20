@@ -29,6 +29,7 @@ void Controller::run(Session& session, ControlServer& server) {
     std::thread io_thread;
     try {
         io_thread = std::thread([&] { run_midi(session); });
+        platform.recover(); // the CPUs' limit and the backlight, had an app been killed with them changed
         while (session.running.load()) {
             record_surface_packets();
             MidiCatalog update;
@@ -136,10 +137,12 @@ void Controller::run_midi(Session& session) {
             // Audition: pad 1 pressed for 300 ms, as if by hand.
             if (audition_requested.exchange(false)) {
                 surface_event(session, {0x99, surface_pad_notes[0], 100}, false, monotonic_ns()); ++session.synthetic_events;
+                session.wake.input();
                 release = now + std::chrono::milliseconds(300);
             }
             if (now >= release) {
                 surface_event(session, {0x89, surface_pad_notes[0], 0}, false, monotonic_ns()); ++session.synthetic_events;
+                session.wake.input();
                 release = Clock::time_point::max();
             }
             MidiSendRequest request;
@@ -186,6 +189,7 @@ bool Controller::Output::send(const std::string& address, const MidiPacket& pack
 void Controller::midi_packet(Session& session, const MidiPortInfo& port, const MidiPacket& packet, bool syncing) {
     if (port.surface) {
         surface_events.push(packet); ++session.hardware_events;
+        session.wake.input(); // the screen answers a control at once
         MidiEvent event;
         if (!channel_event(packet, event)) return;
         session.last_midi.store((unsigned(event.status) << 16) | (unsigned(event.key) << 8) | event.value);
@@ -194,6 +198,12 @@ void Controller::midi_packet(Session& session, const MidiPortInfo& port, const M
     }
     ++session.external_events;
     if (packet.size == 1 && packet.bytes[0] == 0xf8) ++session.clocks;
+    // Notes and controllers from outside are answered on the screen as a hand's are, and so are Start, Continue
+    // and Stop. Clock, Active Sensing and MTC quarter frames are not: they come all the time, and would keep a
+    // still screen drawing at its fastest.
+    const uint8_t first = packet.bytes[0];
+    const bool steady = first == 0xf1 || (packet.size == 1 && (first == 0xf8 || first == 0xfe));
+    if (!steady) session.wake.input();
     app.midi(port, packet);
 }
 

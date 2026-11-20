@@ -23,7 +23,7 @@ std::string Controller::command(Session& session, const std::string& text) {
     // Session
     if (action == "status" && argument.empty()) return status_line(session, app, usb_output);
     if (action == "stock" && argument.empty()) { session.running.store(false); return "OK returning to stock app"; }
-    if (action == "screenshot" && argument.empty()) { session.screenshot.store(true); return "OK screenshot requested"; }
+    if (action == "screenshot" && argument.empty()) { session.screenshot.store(true); session.wake.input(); return "OK screenshot requested"; }
     // Calibration needs every control, including wheel Push. Remote stop,
     // the session deadline and crash recovery still return to stock.
     if (action == "push-exit" && (argument == "on" || argument == "off")) {

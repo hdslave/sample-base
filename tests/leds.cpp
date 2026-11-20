@@ -85,4 +85,26 @@ int main() {
     assert(fresh.update(send, 64) == 3 && wire.size() == 3);
     assert(wire[0] == std::vector<uint8_t>({0xb0, 82, 0}) && wire[1] == std::vector<uint8_t>({0xb0, 84, 0}) &&
            wire[2] == bytes(surface_rgb_packet(4, {})));
+    { // Power: the pads at a share of their colours, the buttons at rest, each from the light's next setting.
+        SurfaceLights low;
+        std::vector<std::vector<uint8_t>> sent;
+        auto out = [&](const MidiPacket& packet) { sent.push_back(bytes(packet)); return true; };
+        low.scale(50); low.pad(0, {127, 3, 0});
+        assert(low.update(out, 64) == 1 && sent.back() == std::vector<uint8_t>({0xf0,0x47,0x7f,0x5c,0x65,0x00,0x04,0x00,64,2,0,0xf7}));
+        low.scale(10); low.pad(0, {127, 3, 0}); // a lit channel never rounds down to dark
+        assert(low.update(out, 64) == 1 && sent.back() == std::vector<uint8_t>({0xf0,0x47,0x7f,0x5c,0x65,0x00,0x04,0x00,13,1,0,0xf7}));
+        low.scale(250); low.pad(0, {200, 3, 0}); // over 100 %: as asked, still 7-bit
+        assert(low.update(out, 64) == 1 && sent.back() == std::vector<uint8_t>({0xf0,0x47,0x7f,0x5c,0x65,0x00,0x04,0x00,127,3,0,0xf7}));
+        low.rest(true);
+        low.button(SurfaceButton::Play, ButtonLight::Bright); low.button(SurfaceButton::Mute, ButtonLight::RedBright);
+        low.button(SurfaceButton::Stop, ButtonLight::Dim); low.button(SurfaceButton::Erase, ButtonLight::Off);
+        sent.clear();
+        assert(low.update(out, 64) == 4);
+        for (const auto& message : sent) {
+            uint8_t value = message[2];
+            assert(value == uint8_t(ButtonLight::Dim) || value == uint8_t(ButtonLight::RedDim) || value == uint8_t(ButtonLight::Off));
+        }
+        low.rest(false); low.button(SurfaceButton::Play, ButtonLight::Bright);
+        assert(low.update(out, 64) == 1 && sent.back()[2] == uint8_t(ButtonLight::Bright));
+    }
 }

@@ -18,8 +18,17 @@ BASE_LAYERS := surface dsp drivers runtime
 CPPFLAGS := -Isrc -I$(BASE_SRC) -I$(JUCE) $(shell pkg-config --cflags freetype2 fontconfig alsa libdrm libsystemd) \
     -DJUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1 -DJUCE_STANDALONE_APPLICATION=1 \
     -DJUCE_USE_CURL=0 -DJUCE_WEB_BROWSER=0 -DNDEBUG
-CXXFLAGS := -std=c++17 -O2 -pthread -MMD -MP
-CFLAGS := -O2 -MMD -MP
+# The MPC Sample's four cores are Cortex-A55s: -mcpu tunes the code for them and allows what they have that plain
+# ARMv8 lacks. The binary then needs a CPU of ARMv8.2 or later to run, the build machine's too, since build.sh runs
+# the tests and the self-test there (an Apple Silicon Mac is; on an older arm64 machine set ARCH_FLAGS=-mtune=cortex-a55).
+# -fno-trapping-math: nothing here reads the floating-point exception flags, so the compiler need not keep them.
+# With both, Melodee plays the same to the bit as without: its DSP bench (--melodee-dsp-bench, heard=) and its
+# self-test's audio were compared. -fno-math-errno did change what the bench played, and -ffast-math would, so
+# neither is here.
+ARCH_FLAGS ?= -mcpu=cortex-a55
+MATH_FLAGS ?= -fno-trapping-math
+CXXFLAGS := -std=c++17 -O2 $(ARCH_FLAGS) $(MATH_FLAGS) -pthread -MMD -MP
+CFLAGS := -O2 $(ARCH_FLAGS) $(MATH_FLAGS) -MMD -MP
 LDLIBS := $(shell pkg-config --libs freetype2 fontconfig alsa libdrm libsystemd) -ldl -pthread -lrt
 MODULE_CPP := $(wildcard $(JUCE)/juce_core/*.cpp $(JUCE)/juce_events/*.cpp $(JUCE)/juce_graphics/*.cpp $(JUCE)/juce_audio_basics/*.cpp)
 MODULE_C := $(wildcard $(JUCE)/juce_core/*.c $(JUCE)/juce_graphics/*.c)
@@ -32,8 +41,10 @@ OBJECTS := $(addprefix build/obj/,$(notdir $(MODULE_CPP:.cpp=.o) $(MODULE_C:.c=.
     $(patsubst src/%.cpp,build/obj/%.o,$(APP_ONLY))
 
 all: $(TARGET)
+# -z now: every library call is bound as the program starts, not at its first use, which for the audio thread
+# would be inside a block.
 $(TARGET): $(OBJECTS)
-	$(CXX) $(OBJECTS) $(LDLIBS) -o $@
+	$(CXX) $(OBJECTS) $(LDLIBS) -Wl,-z,now -o $@
 build/obj/base/%.o: $(BASE_SRC)/%.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Wall -Wextra -Werror -c $< -o $@

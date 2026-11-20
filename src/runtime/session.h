@@ -2,27 +2,74 @@
 #pragma once
 #include "drivers/audio.h"
 #include "drivers/jacks.h"
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <thread>
+#if defined(__linux__)
+#include <ctime>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 // What the runtime's threads share. An app reads it through App::session().
 // Four threads run at once:
 //   audio    AudioDevice::run(), calling App::render()
 //   MIDI     Controller::run_midi(): surface and external MIDI, lights
 //   service  Controller::run(): control commands and slow hardware requests
-//   screen   run_app(): up to 60 frames a second, as fast as the panel takes
-//            them; 10 a second once the screen stands still
+//   screen   run_app(): up to 60 frames a second while a control is in use,
+//            at App::frame_interval() while the picture moves by itself, 10 a
+//            second once it stands still; asleep in between (ScreenWake)
 // The screen thread's counters (Display::Stats, plus the last draw).
 struct ScreenStats {
     std::atomic<uint64_t> presented {0}, pushed {0}, pixels {0}, clips {0};
     std::atomic<uint32_t> last_push_us {0}, max_push_us {0}, full_push_us {0}, draw_us {0};
 };
 
+// What wakes the screen thread before its next frame is due: a control used, a
+// note from outside, a screenshot asked for. input() is for any thread and
+// never blocks: it makes a futex wake only while the screen thread sleeps.
+// The screen thread sleeps in sleep_until() rather than polling.
+struct ScreenWake {
+    using Clock = std::chrono::steady_clock;
+    std::atomic<uint32_t> events {0};   // moves with each thing to answer at once
+    std::atomic<uint32_t> sleeping {0}; // the screen thread is in sleep_until()
+    void input() {
+        events.fetch_add(1, std::memory_order_seq_cst);
+#if defined(__linux__)
+        if (sleeping.load(std::memory_order_seq_cst))
+            syscall(SYS_futex, reinterpret_cast<uint32_t*>(&events), FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0);
+#endif
+    }
+    // Screen thread: sleeps until `until`, or until events is no longer
+    // `seen`. True when an event ended the sleep (or had already come).
+    bool sleep_until(Clock::time_point until, uint32_t seen) {
+        while (events.load(std::memory_order_seq_cst) == seen) {
+            auto now = Clock::now();
+            if (now >= until) return false;
+#if defined(__linux__)
+            auto left = std::chrono::duration_cast<std::chrono::nanoseconds>(until - now).count();
+            timespec limit {time_t(left / 1000000000), long(left % 1000000000)};
+            sleeping.store(1, std::memory_order_seq_cst);
+            // The kernel compares the word with `seen` before it sleeps, so an event between the test above and here is not slept through.
+            syscall(SYS_futex, reinterpret_cast<uint32_t*>(&events), FUTEX_WAIT_PRIVATE, seen, &limit, nullptr, 0);
+            sleeping.store(0, std::memory_order_seq_cst);
+#else
+            std::this_thread::sleep_for(std::min<Clock::duration>(until - now, std::chrono::milliseconds(4)));
+#endif
+        }
+        return true;
+    }
+};
+
 // Every field is atomic or guarded by a lock. Comments name the writer.
 struct Session {
     std::atomic<bool> running {true}, failed {false}, screenshot {false};
+    ScreenWake wake; // Any thread tells it; the screen thread sleeps on it.
     AudioStats audio; // Audio thread.
     // The screen thread sets it when App::audio_format() changes; the audio
     // thread closes the device, opens the new format and clears it.

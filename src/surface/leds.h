@@ -99,8 +99,16 @@ public:
     }
     bool button(SurfaceButton button, ButtonLight light) {
         if (!button_light_supported(button, light)) return false;
+        if (resting.load(std::memory_order_relaxed)) // at rest a bright light goes at its dim one
+            light = light == ButtonLight::Bright ? ButtonLight::Dim : light == ButtonLight::RedBright ? ButtonLight::RedDim : light;
         buttons[size_t(button)].store(uint8_t(light), std::memory_order_relaxed); return true;
     }
+    // Power: the pads' and the fader's lights at `percent` of the colours asked for (100: as asked), and the
+    // buttons at rest (their bright lights dim). Both take effect as each light is next set, so an app that sets
+    // its lights every pass sees them at once; any thread. A colour that was lit keeps at least 1 in each
+    // channel it had, so a dimmed pad never goes dark or changes hue to black.
+    void scale(unsigned percent) { share.store(uint8_t(percent > 100 ? 100 : percent), std::memory_order_relaxed); }
+    void rest(bool on) { resting.store(on, std::memory_order_relaxed); }
     void all_off() {
         for (unsigned n = 0; n < surface_rgb_lights; ++n) rgb(n, {});
         for (unsigned n = 0; n < surface_bank_lights; ++n) bank(n, false);
@@ -145,10 +153,18 @@ private:
     static constexpr uint8_t unset_light = 0xff;
     static constexpr uint32_t unset_rgb = 0xffffffff;
     bool rgb(unsigned index, Rgb colour) {
-        auto clamp = [](uint8_t value) { return uint32_t(value > 127 ? 127 : value); };
+        const uint32_t part = share.load(std::memory_order_relaxed);
+        auto clamp = [part](uint8_t value) {
+            uint32_t level = value > 127 ? 127 : value;
+            if (part >= 100 || !level) return level;
+            uint32_t scaled = (level * part + 50) / 100;
+            return scaled ? scaled : 1u;
+        };
         colours[index].store(clamp(colour.r) << 16 | clamp(colour.g) << 8 | clamp(colour.b), std::memory_order_relaxed);
         return true;
     }
+    std::atomic<uint8_t> share {100};
+    std::atomic<bool> resting {false};
     std::array<std::atomic<uint8_t>, size_t(SurfaceButton::Count)> buttons;
     std::array<std::atomic<uint8_t>, surface_bank_lights> banks;
     std::array<std::atomic<uint8_t>, surface_meter_lights> meters;

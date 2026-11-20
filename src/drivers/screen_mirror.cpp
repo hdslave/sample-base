@@ -254,6 +254,7 @@ struct ScreenMirror::Worker {
         unmap();
         if (fd >= 0) close(fd);
         fd = -1; streaming = false;
+        if (timer >= 0) { itimerspec rest {}; timerfd_settime(timer, 0, &rest, nullptr); } // as stream_off(): no ticks with no stream
     }
 
     void unmap() {
@@ -376,6 +377,10 @@ struct ScreenMirror::Worker {
         none.count = 0; none.type = V4L2_BUF_TYPE_VIDEO_OUTPUT; none.memory = V4L2_MEMORY_MMAP;
         xioctl(fd, VIDIOC_REQBUFS, &none);
         streaming = false;
+        // The frame timer rests with the stream: left armed, it woke this thread at the stream's rate for the rest of
+        // the session, with no picture to send.
+        itimerspec rest {};
+        timerfd_settime(timer, 0, &rest, nullptr);
         set_state(MirrorState::Waiting);
     }
 
