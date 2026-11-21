@@ -111,24 +111,85 @@ Platform::~Platform() {
         std::error_code error;
         std::filesystem::remove(run / "sample-base-backlight", error);
     }
+    restore_cpu_limits();
+}
+namespace {
+std::vector<std::filesystem::path> cpu_policies(const std::filesystem::path& sys) {
+    std::vector<std::filesystem::path> result;
+    for (const auto& path : entries(sys / "devices/system/cpu/cpufreq"))
+        if (path.filename().string().rfind("policy", 0) == 0) result.push_back(path);
+    return result;
+}
+// A policy's speeds, slowest first; without the list (a driver that gives none), its slowest and fastest.
+std::vector<long> cpu_steps(const std::filesystem::path& policy) {
+    std::vector<long> steps;
+    std::istringstream list(read_text(policy / "scaling_available_frequencies"));
+    for (long khz = 0; list >> khz;) if (khz > 0) steps.push_back(khz);
+    if (steps.empty())
+        for (const char* name : {"cpuinfo_min_freq", "cpuinfo_max_freq"})
+            if (long khz = read_number(policy / name); khz > 0) steps.push_back(khz);
+    std::sort(steps.begin(), steps.end());
+    steps.erase(std::unique(steps.begin(), steps.end()), steps.end());
+    return steps;
+}
+}
+CpuSpeedReading Platform::cpu_speed() const {
+    for (const auto& policy : cpu_policies(sys))
+        return {read_number(policy / "scaling_max_freq"), read_number(policy / "cpuinfo_max_freq"), read_number(policy / "scaling_cur_freq"),
+                read_text(policy / "scaling_governor", 64), cpu_steps(policy)};
+    return {};
+}
+bool Platform::cpu_limit(long khz) {
+    bool found = false, done = true;
+    for (const auto& policy : cpu_policies(sys)) {
+        const auto steps = cpu_steps(policy);
+        const std::string before = read_text(policy / "scaling_max_freq", 64);
+        if (steps.empty() || before.empty()) continue;
+        found = true;
+        long wanted = steps.back(); // no limit: the top speed
+        if (khz > 0) {
+            wanted = steps.front(); // never under the slowest
+            for (long step : steps) if (step <= khz) wanted = step;
+        }
+        if (before == std::to_string(wanted)) continue;
+        bool saved = std::any_of(saved_cpu_limits.begin(), saved_cpu_limits.end(), [&](const auto& kept) { return kept.first == policy; });
+        if (!saved) {
+            saved_cpu_limits.emplace_back(policy, before);
+            // For install/restore-stock.sh, should this process end without its destructor: a line a policy.
+            std::ofstream note(run / "sample-base-cpu-limit", std::ios::app);
+            note << policy.string() << ' ' << before << '\n';
+        }
+        if (!write_text(policy / "scaling_max_freq", std::to_string(wanted))) done = false;
+    }
+    return found && done;
+}
+void Platform::restore_cpu_limits() {
+    if (saved_cpu_limits.empty()) return;
+    for (const auto& [policy, limit] : saved_cpu_limits) write_text(policy / "scaling_max_freq", limit);
+    saved_cpu_limits.clear();
+    std::error_code error;
+    std::filesystem::remove(run / "sample-base-cpu-limit", error);
 }
 void Platform::recover() {
-    if (!changed_backlight.empty()) return; // the note is this one's own
-    const auto file = run / "sample-base-backlight";
-    std::ifstream note(file);
-    if (!note) return;
-    std::string device, value;
-    while (note >> device >> value) {
-        // Read as data, though the file is this runtime's: only a backlight that has the attribute, and only a
-        // whole number.
-        const std::filesystem::path path(device);
+    if (!saved_cpu_limits.empty() || !changed_backlight.empty()) return; // the notes are this one's own
+    struct Kept { const char* note; const char* attribute; std::filesystem::path under; };
+    for (const Kept& kept : {Kept {"sample-base-cpu-limit", "scaling_max_freq", sys / "devices/system/cpu/cpufreq"},
+                             Kept {"sample-base-backlight", "brightness", sys / "class/backlight"}}) {
+        std::ifstream note(run / kept.note);
+        if (!note) continue;
+        std::string device, value;
+        while (note >> device >> value) {
+            // Read as data, though the file is this runtime's: only a device of the note's kind that has the
+            // attribute, and only a whole number.
+            const std::filesystem::path path(device);
+            std::error_code error;
+            if (path.parent_path() != kept.under || value.find_first_not_of("0123456789") != std::string::npos) continue;
+            if (std::filesystem::exists(path / kept.attribute, error)) write_text(path / kept.attribute, value);
+        }
+        note.close();
         std::error_code error;
-        if (path.parent_path() != sys / "class/backlight" || value.find_first_not_of("0123456789") != std::string::npos) continue;
-        if (std::filesystem::exists(path / "brightness", error)) write_text(path / "brightness", value);
+        std::filesystem::remove(run / kept.note, error);
     }
-    note.close();
-    std::error_code error;
-    std::filesystem::remove(file, error);
 }
 bool Platform::brightness(unsigned value) {
     for (const auto& path : entries(sys / "class/backlight")) {
