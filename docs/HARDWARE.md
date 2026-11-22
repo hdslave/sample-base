@@ -28,9 +28,14 @@ differences from 1.3.0.12:
 
 Read on 1.4.0.7 without switching it on. inMusic has not published 1.4's
 sources: [az0x-open-source](https://github.com/inmusic-software/az0x-open-source)
-has `mpc-sample/1.3.0` only, so there is no 6.18.59 kernel, 1.4 device tree or
-U-Boot `2026.07-inmusic-20260909` to read. What the switch lets the MPC start
-is therefore not known.
+has no MPC Sample branch after `mpc-sample/1.3.0`, so there is no 6.18.59
+kernel, 1.4 device tree or U-Boot `2026.07-inmusic-20260909` to read. Its
+`engine-os-g2/5.3` branch has a nearer U-Boot, `2026.07-inmusic-20260721`
+(archive SHA-256 `164245cc…`), with no untrusted mode either: `az07.c` differs
+from 1.3.0's only by a removed unused variable, `board/inmusic/common` is the
+same, and `az07.h` still imports only `serial#` and `ethaddr`. The switch's
+U-Boot side, if it has one, came after 21 July 2026. What the switch lets the
+MPC start is therefore not known.
 
 | Area | 1.4.0.7 |
 | --- | --- |
