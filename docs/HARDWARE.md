@@ -22,7 +22,32 @@ differences from 1.3.0.12:
 | USB webcam | `CONFIG_USB_CONFIGFS_F_UVC` is not set: no `uvc` gadget function exists to fall back on. |
 | Audio rate | The sound card's `simple-audio-card,cpu` has `system-clock-frequency = 22579200` with `mclk-fs = 512`; the kernel's simple-card then holds every stream at 22579200 / 512 = 44100 Hz. 48 and 96 kHz are refused (`Set 48000 Hz: Invalid argument`) and the runtime opens 44.1 kHz. |
 | Gadget | Same `ac50` gadget (`uac2.audio`, `ncm.network`, `midi.midi`); widening for stems works. |
-| Secure boot | **Load Untrusted OS** on the same page turns secure boot off, so the MPC starts an operating system inMusic has not verified. Not used. |
+| Secure boot | **Load Untrusted OS** on the same page turns secure boot off, so the MPC starts an operating system inMusic has not verified. Not used; see below. |
+
+### Load Untrusted OS
+
+Read on 1.4.0.7 without switching it on. inMusic has not published 1.4's
+sources: [az0x-open-source](https://github.com/inmusic-software/az0x-open-source)
+has `mpc-sample/1.3.0` only, so there is no 6.18.59 kernel, 1.4 device tree or
+U-Boot `2026.07-inmusic-20260909` to read. What the switch lets the MPC start
+is therefore not known.
+
+| Area | 1.4.0.7 |
+| --- | --- |
+| Setting | Stock app property `Enhancements.UntrustedOS` (settings key `untrusted_os`). Its text: switching it off turns secure boot back on, after which the MPC "may fall back to firmware update mode". |
+| Use record | The stock app has code that writes `imb-dev-mode-used=1` and `imb-beta-features-used=1` into the U-Boot environment (`/etc/fw_env.config`: `env1` primary, `env2` backup). This unit's environment holds only `serial#` so far. |
+| eMMC | GPT: `spl1`/`spl2` 480K, `env1`/`env2` 512K, `uboot1`/`uboot2` 4M, `factory` 64M (p7), `boot` 128M (p8), `recovery` 128M (p9), `rootfs` 1G (p10, dm-verity), `content` 4G (p11), `data` (p12). |
+| Boot | 1.3.0's U-Boot loads `kernel.fit` from `boot` (or `recovery`) and runs `bootm $loadaddr#conf-rk3566-az07-ac50`. The kernel command line carries the dm-verity table of `rootfs` with its root hash (no `DM_VERITY_VERIFY_ROOTHASH_SIG`), so a new kernel, device tree or command line can keep inMusic's root file system unchanged. 1.3.0's U-Boot imports only `serial#` and `ethaddr` from `env1`/`env2` and has no untrusted mode. |
+| Kernel | `SECURITY_LOADPIN_ENFORCE` and `SECURITY_LOADPIN_VERITY` on, `/usr/lib/az0x/trusted-verity-digests` empty; `MODULE_SIG`, `MODVERSIONS`, `KEXEC`, lockdown and IMA off. `loadpin.enforce=0` on the command line would let unsigned modules load. |
+| Base modules | `kernel/` builds are for `6.12.60-imb-2025-12-03-rt13` and need a rebuild for `6.18.59-imb-2026-10-26-rt9` whether LoadPin stays or not. The webcam module carries its own `f_uvc`, so the kernel's missing `F_UVC` does not matter. |
+| Recovery | 1.3.0's U-Boot: 2 failed starts go to update mode, 4 to the `recovery` partition, 6 to fastboot over USB; the recovery button on a clean start goes to `recovery`. U-Boot also has a rollback generation number (`AZ0X_GENERATION_NUMBER`), so going back to 1.3.0.12 may be refused (not tried). |
+
+The smallest own boot image: the stock 1.4 kernel, a device tree whose sound
+node has no `system-clock-frequency` (48 and 96 kHz), and `loadpin.enforce=0`,
+packed as `kernel.fit` for `boot` only. `recovery`, `spl1`/`spl2` and
+`uboot1`/`uboot2` stay stock; the bootloaders sit under the chip's own secure
+boot and must not be written. First step: get the 1.4 sources from inMusic and
+read the 2026.07 U-Boot to see what untrusted mode accepts.
 
 ## Reference and reproducibility
 
