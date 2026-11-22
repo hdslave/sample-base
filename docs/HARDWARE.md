@@ -7,6 +7,23 @@ in `src/demos/` and the starter in `src/starter/` are examples. Kernel
 drivers, regulators, codec sequencing and hardware ownership remain with
 Linux.
 
+## Firmware 1.4
+
+Checked on 1.4.0.7 (stock app `MPC Sample 1.4.0`, SHA-256 `2271252f…`,
+kernel `6.18.59-imb-2026-10-26-rt9`, az0x 5.0.21). The stock app's Settings
+gained a **DEV ENHANCEMENTS (BETA)** page; the base runs on 1.4 with these
+differences from 1.3.0.12:
+
+| Area | 1.4.0.7 |
+| --- | --- |
+| SSH | **Developer Mode** starts the stock `sshd` on port 22. `/data/ssh/sshd_config.d/allow-access.conf` lets root in with no key or password (`AuthenticationMethods none`). |
+| Card autorun | The salted `autorun.check` is gone: a signed autorun is now inMusic's `autorun/*.scriptpkg` (`az01-signed-fs`). With Developer Mode on, the stock app (`ScriptRunner`) looks for `autorun.sh` at the top of each drive, asks *The drive … contains an autorun script. Do you want to run it now?*, and on Yes runs `systemd-run --wait --collect --unit autorun-sh --setenv AZ0X_SCRIPT_SRCDIR=<dir> /bin/sh <drive>/autorun.sh` with an empty environment. It asks each time it starts with the card in. [install/top-autorun.sh](../install/top-autorun.sh) is that file: it runs `autorun/autorun.sh`, as 1.3.0.12 does. |
+| Kernel modules | LoadPin enforces (`CONFIG_SECURITY_LOADPIN_ENFORCE`, verity root): modules load only from the read-only root file system. `finit_module` from memory is refused (`LoadPin: kernel-module denied obj="/memfd:sample_base_panel"`), so the base's panel driver, webcam function and JPEG switch (`kernel/`) do not load. The panel stays on `st7796s` (landscape writes, the tearing `panel_driver.h` describes); Screen Mirror reports `failed`. |
+| USB webcam | `CONFIG_USB_CONFIGFS_F_UVC` is not set: no `uvc` gadget function exists to fall back on. |
+| Audio rate | The sound card's `simple-audio-card,cpu` has `system-clock-frequency = 22579200` with `mclk-fs = 512`; the kernel's simple-card then holds every stream at 22579200 / 512 = 44100 Hz. 48 and 96 kHz are refused (`Set 48000 Hz: Invalid argument`) and the runtime opens 44.1 kHz. |
+| Gadget | Same `ac50` gadget (`uac2.audio`, `ncm.network`, `midi.midi`); widening for stems works. |
+| Secure boot | **Load Untrusted OS** on the same page turns secure boot off, so the MPC starts an operating system inMusic has not verified. Not used. |
+
 ## Reference and reproducibility
 
 Reference: inMusic's [MPC Sample 1.3.0 open-source release](https://github.com/inmusic-software/az0x-open-source/tree/mpc-sample/1.3.0),
