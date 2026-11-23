@@ -314,6 +314,7 @@ Contributions are welcome under the licence of the affected files. Before
 committing, enable the privacy hook with `git config core.hooksPath .githooks`
 and run `python3 tools/check_private_files.py` after staging. It takes source
 text only, plus the docs' own images (PNG, JPEG, GIF or WebP under a
-`docs/images/` folder). Keep generated builds and local device material in
+`docs/images/` folder) and the images and fonts (TrueType or OpenType) of
+worked examples under `docs/examples/`. Keep generated builds and local device material in
 ignored storage. This is an independent
 community project, unaffiliated with Akai Professional or inMusic.
