@@ -1,6 +1,6 @@
 # sample-base
 
-Standalone MPC Sample AC50 1.3.0.12 application. JUCE draws into an image;
+Standalone MPC Sample AC50 application (firmware 1.3.0.12 and 1.4.0.7; docs/HARDWARE.md, Firmware 1.4). JUCE draws into an image;
 Linux DRM presents it, ALSA owns audio and raw MIDI, and a built-in beep/boop
 synth supplies audio.
 No stock application injection, offsets, copied firmware, or proprietary assets.
