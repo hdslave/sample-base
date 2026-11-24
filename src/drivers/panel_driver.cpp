@@ -7,7 +7,7 @@
 #include <string>
 
 // Weak: a build without the module (base.mk) has neither, and keeps the stock driver. One
-// build of it for each firmware's kernel: 1.3.0.12 (6.12) and 1.4.0.7 (6.18).
+// build of it for each firmware's kernel: 1.3.0.12 (6.12) and 1.4 (6.18).
 extern "C" const unsigned char sample_base_panel_module[] __attribute__((weak));
 extern "C" const unsigned char sample_base_panel_module_end[] __attribute__((weak));
 extern "C" const unsigned char sample_base_panel_6_18_module[] __attribute__((weak));

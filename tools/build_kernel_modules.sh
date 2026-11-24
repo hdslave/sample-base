@@ -11,7 +11,7 @@
 # /proc/config.gz from that firmware; the tree is prepared once:
 #   6.12 (firmware 1.3.0.12, default): inMusic's public 6.12.60 release in
 #        .local/kbuild/kernel-source, .local/mpc-kernel.config; <module>.ko
-#   6.18 (firmware 1.4.0.7): inMusic's public 6.18.45 release (engine-os-g2/5.3)
+#   6.18 (firmware 1.4.0.7 and 1.4.0.8): inMusic's public 6.18.45 release (engine-os-g2/5.3)
 #        brought to 6.18.59 with kernel.org's stable increments and named
 #        6.18.59-imb-2026-10-26-rt9, in .local/kbuild-6.18/kernel-source,
 #        .local/mpc-kernel-6.18.config; <module>-6.18.ko

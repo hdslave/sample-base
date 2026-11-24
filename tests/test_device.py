@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -6,6 +7,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from device import Device, service_unit, stale_releases
+
+ROOT = Path(__file__).resolve().parents[1]
 
 ACTIVE_RELEASE = "/run/sample-base-release-abcdef012345"
 RUN_NAMES = ["sample-base", "sample-base-release-abcdef012345", "sample-base-release-2e98caf725ed",
@@ -465,13 +468,20 @@ class SdAutorunTests(unittest.TestCase):
     def test_firmware_is_named_by_the_stock_app_digest(self):
         device = Device(port=22)
         for digest, version in (("b6584cba76e416e432ad202509099d34373dc2c3d6a8fb625f5678bf0193b508", "1.3.0.12"),
-                                ("2271252ffded26830546d4ee1852e39a2c1f4c574a40c47fba10b5a397727ec2", "1.4.0.7")):
+                                ("2271252ffded26830546d4ee1852e39a2c1f4c574a40c47fba10b5a397727ec2", "1.4.0.7"),
+                                ("473fb7260e597e61cc55d9d30595eb9d9aa1304ff1b88960e633ad19457dc91a", "1.4.0.8")):
             answers = {"uname -m": "aarch64\n", "sha256sum '/usr/bin/MPC Sample'": digest + "  /usr/bin/MPC Sample\n"}
             device.run = lambda command, **kwargs: subprocess.CompletedProcess([], 0, answers[command], "")
             self.assertEqual(device.firmware(), version)
         answers["sha256sum '/usr/bin/MPC Sample'"] = "0" * 64 + "  /usr/bin/MPC Sample\n"
         with self.assertRaises(RuntimeError):
             device.firmware()
+
+    def test_card_start_knows_the_same_firmwares(self):
+        from device import STOCK_FIRMWARES
+        worker = (ROOT / "install/sd-worker.sh").read_text()
+        listed = set(re.findall(r"^\s+([0-9a-f]{64})\) ;;$", worker, re.MULTILINE))
+        self.assertEqual(listed, set(STOCK_FIRMWARES))
 
     def card_install(self, card, firmware):
         """install-sd onto a card folder on this computer, as if the MPC ran the given firmware."""

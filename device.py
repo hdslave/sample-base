@@ -19,6 +19,7 @@ BINARY = ROOT / "build/sample-base"
 STOCK_FIRMWARES = {
     "b6584cba76e416e432ad202509099d34373dc2c3d6a8fb625f5678bf0193b508": "1.3.0.12",
     "2271252ffded26830546d4ee1852e39a2c1f4c574a40c47fba10b5a397727ec2": "1.4.0.7",
+    "473fb7260e597e61cc55d9d30595eb9d9aa1304ff1b88960e633ad19457dc91a": "1.4.0.8",
 }
 # SSH: firmware 1.4's Developer Mode runs the stock SSH server on port 22 (no
 # key or password); on 1.3.0.12 the card's autorun starts one on 2222 that

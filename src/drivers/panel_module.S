@@ -2,7 +2,7 @@
  * kernel/panel's driver module (GPL-2.0+, built by
  * tools/build_kernel_modules.sh) inside the binary, loaded by
  * src/drivers/panel_driver.cpp: one build for firmware 1.3.0.12's kernel
- * (PANEL_MODULE) and one for 1.4.0.7's (PANEL_MODULE_6_18), each its path
+ * (PANEL_MODULE) and one for 1.4's (PANEL_MODULE_6_18), each its path
  * from where make runs (base.mk), each left out when not defined. */
     .section .rodata
 #ifdef PANEL_MODULE

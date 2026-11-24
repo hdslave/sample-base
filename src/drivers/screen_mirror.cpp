@@ -27,7 +27,7 @@
 #include <vector>
 
 // Weak: a build without the modules (base.mk) has no Screen Mirror. One build of each for each
-// firmware's kernel: 1.3.0.12 (6.12) and 1.4.0.7 (6.18).
+// firmware's kernel: 1.3.0.12 (6.12) and 1.4 (6.18).
 extern "C" const unsigned char sample_base_uvc_module[] __attribute__((weak));
 extern "C" const unsigned char sample_base_uvc_module_end[] __attribute__((weak));
 extern "C" const unsigned char sample_base_vepu_module[] __attribute__((weak));
