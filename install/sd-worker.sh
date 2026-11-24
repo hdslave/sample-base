@@ -6,10 +6,11 @@
 # any exit. Only /run changes; on any doubt the stock app keeps running.
 set -eu
 DIR=${1:?SD sample-base folder required}
-# The stock firmwares known to work (device.py STOCK_FIRMWARES): 1.3.0.12, 1.4.0.7.
+# The stock firmwares known to work (device.py STOCK_FIRMWARES): 1.3.0.12, 1.4.0.7, 1.4.0.8.
 case "$(sha256sum '/usr/bin/MPC Sample' | cut -d ' ' -f 1)" in
     b6584cba76e416e432ad202509099d34373dc2c3d6a8fb625f5678bf0193b508) ;;
     2271252ffded26830546d4ee1852e39a2c1f4c574a40c47fba10b5a397727ec2) ;;
+    473fb7260e597e61cc55d9d30595eb9d9aa1304ff1b88960e633ad19457dc91a) ;;
     *) echo 'Unknown stock firmware; stock left running' >&2; exit 1 ;;
 esac
 (cd "$DIR" && sha256sum -c SHA256SUMS) || { echo 'Card files changed; stock left running' >&2; exit 1; }

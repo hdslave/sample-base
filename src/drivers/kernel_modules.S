@@ -3,7 +3,7 @@
  * inside the binary, loaded by src/drivers/screen_mirror.cpp: kernel/uvc's
  * webcam function and kernel/vepu's JPEG encoder switch. UVC_MODULE and
  * VEPU_MODULE are the builds for firmware 1.3.0.12's kernel, UVC_MODULE_6_18
- * and VEPU_MODULE_6_18 those for 1.4.0.7's; each is its path from where make
+ * and VEPU_MODULE_6_18 those for 1.4's; each is its path from where make
  * runs (base.mk), and a pair not defined is left out. */
     .section .rodata
 #if defined(UVC_MODULE) && defined(VEPU_MODULE)

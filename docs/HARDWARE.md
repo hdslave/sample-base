@@ -14,7 +14,14 @@ kernel `6.18.59-imb-2026-10-26-rt9`, az0x 5.0.21). The stock app's Settings
 gained a **DEV ENHANCEMENTS (BETA)** page; the base runs on 1.4 with these
 differences from 1.3.0.12:
 
-| Area | 1.4.0.7 |
+1.4.0.8 (stock app `1.4.0.8 (d87ac8c12e9)`, SHA-256 `473fb726…`, built
+13 November 2026, `BUILD_TAG` `jenkins-ACVS-MPC-Sample-SME6-Release-Yocto-114`)
+keeps the same kernel, az0x 5.0.21, sound node (44.1 kHz only), gadget,
+surface and MIDI ports, SSH and top-of-card `autorun.sh`; the stock app and
+the root file system (new dm-verity root hash) changed. The table holds for
+both.
+
+| Area | 1.4.0.7 and 1.4.0.8 |
 | --- | --- |
 | SSH | **Developer Mode** starts the stock `sshd` on port 22. `/data/ssh/sshd_config.d/allow-access.conf` lets root in with no key or password (`AuthenticationMethods none`). |
 | Card autorun | The salted `autorun.check` is gone: a signed autorun is now inMusic's `autorun/*.scriptpkg` (`az01-signed-fs`). With Developer Mode on, the stock app (`ScriptRunner`) looks for `autorun.sh` at the top of each drive, asks *The drive … contains an autorun script. Do you want to run it now?*, and on Yes runs `systemd-run --wait --collect --unit autorun-sh --setenv AZ0X_SCRIPT_SRCDIR=<dir> /bin/sh <drive>/autorun.sh` with an empty environment. It asks each time it starts with the card in. [install/top-autorun.sh](../install/top-autorun.sh) is that file: it runs `autorun/autorun.sh`, as 1.3.0.12 does. |

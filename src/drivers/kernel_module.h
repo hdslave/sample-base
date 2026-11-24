@@ -10,7 +10,7 @@
 // src/drivers/kernel_modules.S); load() puts one into the kernel from memory,
 // with no file on any disk. probe() loads modules the MPC ships in
 // /lib/modules (with their dependencies) by modprobe. Each module is built for
-// each firmware's kernel (1.3.0.12: 6.12.60, 1.4.0.7: 6.18.59); load() with
+// each firmware's kernel (1.3.0.12: 6.12.60, 1.4: 6.18.59); load() with
 // several images picks the one built for the running kernel.
 namespace kernel_module {
 // A module held in the binary, [begin, end); both null when the build has none

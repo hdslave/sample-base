@@ -66,7 +66,7 @@ $(foreach m,$(MODULE_C),$(eval $(call c_module_rule,$(m))))
 # The panel's own driver (kernel/panel, docs/HARDWARE.md, Display), embedded
 # for src/drivers/panel_driver.cpp to load. The module is kept beside its
 # source (tools/build_kernel_modules.sh rebuilds it), one for firmware
-# 1.3.0.12's kernel and one (-6.18) for 1.4.0.7's; a build without one for the
+# 1.3.0.12's kernel and one (-6.18) for 1.4's; a build without one for the
 # running kernel keeps the panel on the stock driver.
 PANEL_MODULE ?= $(BASE_SRC)/../kernel/panel/sample_base_panel.ko
 PANEL_MODULE_6_18 ?= $(BASE_SRC)/../kernel/panel/sample_base_panel-6.18.ko
@@ -81,7 +81,7 @@ build/obj/base/drivers/panel_module.o: $(BASE_SRC)/drivers/panel_module.S $(PANE
 	$(CC) -c $(PANEL_DEFINES) $< -o $@
 endif
 # Screen Mirror's modules (kernel/uvc, kernel/vepu; src/drivers/screen_mirror.h),
-# embedded the same way, a pair for each kernel (1.4.0.7's uvc from
+# embedded the same way, a pair for each kernel (1.4's uvc from
 # kernel/uvc-6.18); a build without a pair for the running kernel has no
 # Screen Mirror.
 UVC_MODULE ?= $(BASE_SRC)/../kernel/uvc/sample_base_uvc.ko

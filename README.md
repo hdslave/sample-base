@@ -1,6 +1,6 @@
 # sample-base
 
-An open-source, standalone JUCE application base for **MPC Sample AC50 firmware 1.3.0.12 and 1.4.0.7**
+An open-source, standalone JUCE application base for **MPC Sample AC50 firmware 1.3.0.12, 1.4.0.7 and 1.4.0.8**
 ([what 1.4 changes](docs/HARDWARE.md#firmware-14)).
 It draws its own screen, reads the physical pads and makes simple beeps and
 boops without running or injecting into the stock MPC application.
