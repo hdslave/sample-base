@@ -50,30 +50,60 @@ Neither has an untrusted mode:
   `required = "conf"`), and `SPL_FIT_SIGNATURE` selects `FIT_SIGNATURE`, so
   `bootm` refuses a `kernel.fit` whose configuration inMusic has not signed.
   The environment cannot turn this off (`verify` is not imported).
+  `fw_setenv bootargs ...` and `fw_setenv loadpin.enforce 0` cannot disable
+  LoadPin either: neither variable is imported or added to the kernel command
+  line. `loadpin.enforce=0` must reach the kernel at boot; deleting the
+  developer-use record does not change LoadPin or secure boot.
 - Kernel: LoadPin is the upstream code, and no file reads the switch.
 
 What the switch changes is outside the published sources: the Rockchip
 loader, OP-TEE, or a U-Boot other than 20260930 (1.4.0.7 had
-`2026.07-inmusic-20260909`; 1.4.0.8's is not read yet). What it lets the MPC
-start is therefore still not known.
+`2026.07-inmusic-20260909`; both `uboot1` and `uboot2` on the connected
+1.4.0.8 unit also identify as `2026.07-inmusic-20260909`, read without
+writing the partitions). What it lets the MPC start is therefore still not known.
 
 | Area | 1.4.0.7 |
 | --- | --- |
 | Setting | Stock app property `Enhancements.UntrustedOS` (settings key `untrusted_os`). Its text: switching it off turns secure boot back on, after which the MPC "may fall back to firmware update mode". |
-| Use record | The stock app has code that writes `imb-dev-mode-used=1` and `imb-beta-features-used=1` into the U-Boot environment (`/etc/fw_env.config`: `env1` primary, `env2` backup). This unit's environment holds only `serial#` so far. |
+| Use record | The stock app has code that writes `imb-dev-mode-used=1` and `imb-beta-features-used=1` into the U-Boot environment (`/etc/fw_env.config`: `env1` primary, `env2` backup). Startup removes only the developer-use marker; see below. |
 | eMMC | GPT: `spl1`/`spl2` 480K, `env1`/`env2` 512K, `uboot1`/`uboot2` 4M, `factory` 64M (p7), `boot` 128M (p8), `recovery` 128M (p9), `rootfs` 1G (p10, dm-verity), `content` 4G (p11), `data` (p12). |
 | Boot | 1.3.0's and 1.4.0's U-Boot load `kernel.fit` from `boot` (or `recovery`) and run `bootm $loadaddr#conf-rk3566-az07-ac50`. The kernel command line carries the dm-verity table of `rootfs` with its root hash (no `DM_VERITY_VERIFY_ROOTHASH_SIG`), so a new kernel, device tree or command line can keep inMusic's root file system unchanged. Both import only `serial#` and `ethaddr` from `env1`/`env2` and have no untrusted mode. |
 | Kernel | `SECURITY_LOADPIN_ENFORCE` and `SECURITY_LOADPIN_VERITY` on, `/usr/lib/az0x/trusted-verity-digests` empty; `MODULE_SIG`, `MODVERSIONS`, `KEXEC`, lockdown and IMA off. `loadpin.enforce=0` on the command line would let unsigned modules load. |
 | Base modules | `KERNEL=6.18 tools/build_kernel_modules.sh` builds them for `6.18.59-imb-2026-10-26-rt9` against inMusic's 1.4.0 kernel release with the 1.4 `/proc/config.gz`. The first builds used inMusic's 6.18.45 tree (`engine-os-g2/5.3`) brought to 6.18.59 with kernel.org's stable increments; that tree differs from the 1.4.0 release only in five `.c` files (`seq_midi.c`, `8250_port.c`, three DSI panel drivers) and the `az04`/`az07` defconfigs, and the modules built against the release are byte-identical. Every symbol they need is exported by the 6.18 tree or the stock `videobuf2` modules. The webcam module carries its own `f_uvc` (6.18's in `kernel/uvc-6.18`), so the kernel's missing `F_UVC` does not matter. |
 | Recovery | 1.3.0's and 1.4.0's U-Boot: 2 failed starts go to update mode, 4 to the `recovery` partition, 6 to fastboot over USB; the recovery button on a clean start goes to `recovery`. U-Boot also has a rollback generation number (`AZ0X_GENERATION_NUMBER`), so going back to 1.3.0.12 may be refused (not tried). |
 
+On the connected 1.4.0.8 unit, root's
+`sysctl -w kernel.loadpin.enforce=0` returned `Invalid argument`; a second
+read still returned `1`. The boot log shows `dm-0` read-only and pinning
+engaged when PID 1 loads `ipv6.ko`. The running `/proc/config.gz` confirms
+`SECURITY_LOADPIN`, `SECURITY_LOADPIN_ENFORCE` and `SECURITY_LOADPIN_VERITY`
+on, with `KEXEC`, `KEXEC_FILE`, `DEVMEM`, `MODULE_UNLOAD` and `MODULE_SIG`
+off. Root cannot turn off enforcement through the sysctl after this pin;
+there is no `/dev/mem` or kexec route in this build. The upstream
+[LoadPin documentation](https://docs.kernel.org/admin-guide/LSM/LoadPin.html)
+describes the boot argument and the read-only pin restriction.
+
+At app startup on 1.4.0.7 and 1.4.0.8, after stopping `ac50.service`,
+`install/clear-dev-marker.sh` removes only `imb-dev-mode-used`. It checks
+architecture and the stock-app hash, reads the full environment, writes
+only if the exact marker exists (including an empty value), then verifies
+removal. A targeted `fw_printenv imb-dev-mode-used` prints an empty
+assignment even when absent on 1.4.0.8, so it cannot decide whether to write.
+An unreadable environment, missing tools or failed write is logged and does
+not block startup or recovery. `imb-beta-features-used` and other variables
+stay untouched. Returning to stock can set the marker again; this does not
+guarantee that use is never recorded. The connected 1.4.0.8 unit had no
+marker: running the helper left its environment unchanged. Removal and
+failure paths are covered with simulated tools, not a device flash write.
+
 The smallest own boot image: the stock 1.4 kernel, a device tree whose sound
 node has no `system-clock-frequency` (48 and 96 kHz), and `loadpin.enforce=0`,
 packed as `kernel.fit` for `boot` only. `recovery`, `spl1`/`spl2` and
 `uboot1`/`uboot2` stay stock; the bootloaders sit under the chip's own secure
 boot and must not be written. The 1.4 sources do not show what untrusted
-mode accepts. Next step: read the U-Boot version in `uboot1`/`uboot2` on
-1.4.0.8.
+mode accepts. The installed 20260909 U-Boot differs from the published
+20260930 source; neither the untrusted-mode boot path nor an own boot image
+has been tested.
 
 ## Reference and reproducibility
 

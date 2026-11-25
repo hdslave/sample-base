@@ -52,7 +52,7 @@ OLD_SD_FOLDER = "sample-base"
 SD_COMMAND = ('/bin/sh "$(dirname -- "$0")/sample-base/sd-boot.sh" '
               '"$(dirname -- "$0")/sample-base" > /run/sample-base-sd.log 2>&1 || true')
 PLUGINS_MARKER = "# MPC_PLUGINS_SD_START"
-SD_FILES = ("sample-base", "restore-stock.sh", "sd-boot.sh", "sd-worker.sh", "sd-update.sh")
+SD_FILES = ("sample-base", "restore-stock.sh", "sd-boot.sh", "sd-worker.sh", "sd-update.sh", "clear-dev-marker.sh")
 
 
 def autorun_check(manifest, script):
@@ -120,6 +120,7 @@ Description=sample-base standalone JUCE instrument
 [Service]
 Type=exec
 ExecStartPre=/bin/systemctl stop ac50.service
+ExecStartPre=-/bin/sh {release}/clear-dev-marker.sh
 ExecStart={release}/sample-base{app_option}
 ExecStopPost=/bin/sh {release}/restore-stock.sh
 Restart=no
@@ -183,6 +184,7 @@ class Device:
         self.check_identity()
         files = {"sample-base": BINARY,
                  "restore-stock.sh": ROOT / "install/restore-stock.sh",
+                 "clear-dev-marker.sh": ROOT / "install/clear-dev-marker.sh",
                  "sd-update.sh": ROOT / "install/sd-update.sh"}  # installs updates from the card
         for path in files.values():
             if not path.is_file():
@@ -326,7 +328,8 @@ class Device:
         firmware = self.firmware()
         sources = {"sample-base": BINARY, "restore-stock.sh": ROOT / "install/restore-stock.sh",
                    "sd-boot.sh": ROOT / "install/sd-boot.sh", "sd-worker.sh": ROOT / "install/sd-worker.sh",
-                   "sd-update.sh": ROOT / "install/sd-update.sh"}
+                   "sd-update.sh": ROOT / "install/sd-update.sh",
+                   "clear-dev-marker.sh": ROOT / "install/clear-dev-marker.sh"}
         for path in sources.values():
             if not path.is_file():
                 raise RuntimeError("Build first with ./build.sh")
