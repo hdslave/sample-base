@@ -31,8 +31,8 @@ The modules under `kernel/` are GPL-2.0 (text in `LICENSES/GPL-2.0.txt`),
 as the kernel they load into; each `.ko` is built from the source beside it
 by `tools/build_kernel_modules.sh` against inMusic's MPC Sample kernel
 source release (6.12.60, pinned in `docs/HARDWARE.md`); each `-6.18.ko`
-against inMusic's public 6.18.45 release (`engine-os-g2/5.3`) brought to
-6.18.59 with kernel.org's stable increments, for firmware 1.4.0.7 and 1.4.0.8.
+against inMusic's MPC Sample 1.4.0 kernel source release (6.18.59, pinned in
+`docs/HARDWARE.md`), for firmware 1.4.0.7 and 1.4.0.8.
 
 - `kernel/panel/`: sample-base's panel driver, after inMusic's
   `drivers/gpu/drm/tiny/st7796s.c` (John Keeping), GPL-2.0+.
