@@ -33,33 +33,47 @@ both.
 
 ### Load Untrusted OS
 
-Read on 1.4.0.7 without switching it on. inMusic has not published 1.4's
-sources: [az0x-open-source](https://github.com/inmusic-software/az0x-open-source)
-has no MPC Sample branch after `mpc-sample/1.3.0`, so there is no 6.18.59
-kernel, 1.4 device tree or U-Boot `2026.07-inmusic-20260909` to read. Its
-`engine-os-g2/5.3` branch has a nearer U-Boot, `2026.07-inmusic-20260721`
-(archive SHA-256 `164245cc…`), with no untrusted mode either: `az07.c` differs
-from 1.3.0's only by a removed unused variable, `board/inmusic/common` is the
-same, and `az07.h` still imports only `serial#` and `ethaddr`. The switch's
-U-Boot side, if it has one, came after 21 July 2026. What the switch lets the
-MPC start is therefore not known.
+Read on 1.4.0.7 without switching it on, then against inMusic's
+[MPC Sample 1.4.0 open-source release](https://github.com/inmusic-software/az0x-open-source/tree/mpc-sample/1.4.0)
+(commit `c879e12d4fa5c334e7dd456cd396179fff9cb946`, 24 November 2026):
+
+| Public package | SHA-256 |
+| --- | --- |
+| `linux-imb-6.18.59+git-r0` | `2123c75b243f5d544c4cc3589073a589537a267c5557a5dacd8d337c356c447d` |
+| `u-boot-imb-1_2026.07-inmusic-20260930-r0` | `eb48188475d2256de89fa136901a9be518cb8db16bed09344e488f7cef01051c` |
+
+Neither has an untrusted mode:
+
+- U-Boot `2026.07-inmusic-20260930`: `board/inmusic/az07` has no switch, and
+  `az07.h` still imports only `serial#` and `ethaddr` from `env1`/`env2`.
+  The MPC's U-Boot device tree includes `az0x-akai-keys.dtsi` (key `akai-1`,
+  `required = "conf"`), and `SPL_FIT_SIGNATURE` selects `FIT_SIGNATURE`, so
+  `bootm` refuses a `kernel.fit` whose configuration inMusic has not signed.
+  The environment cannot turn this off (`verify` is not imported).
+- Kernel: LoadPin is the upstream code, and no file reads the switch.
+
+What the switch changes is outside the published sources: the Rockchip
+loader, OP-TEE, or a U-Boot other than 20260930 (1.4.0.7 had
+`2026.07-inmusic-20260909`; 1.4.0.8's is not read yet). What it lets the MPC
+start is therefore still not known.
 
 | Area | 1.4.0.7 |
 | --- | --- |
 | Setting | Stock app property `Enhancements.UntrustedOS` (settings key `untrusted_os`). Its text: switching it off turns secure boot back on, after which the MPC "may fall back to firmware update mode". |
 | Use record | The stock app has code that writes `imb-dev-mode-used=1` and `imb-beta-features-used=1` into the U-Boot environment (`/etc/fw_env.config`: `env1` primary, `env2` backup). This unit's environment holds only `serial#` so far. |
 | eMMC | GPT: `spl1`/`spl2` 480K, `env1`/`env2` 512K, `uboot1`/`uboot2` 4M, `factory` 64M (p7), `boot` 128M (p8), `recovery` 128M (p9), `rootfs` 1G (p10, dm-verity), `content` 4G (p11), `data` (p12). |
-| Boot | 1.3.0's U-Boot loads `kernel.fit` from `boot` (or `recovery`) and runs `bootm $loadaddr#conf-rk3566-az07-ac50`. The kernel command line carries the dm-verity table of `rootfs` with its root hash (no `DM_VERITY_VERIFY_ROOTHASH_SIG`), so a new kernel, device tree or command line can keep inMusic's root file system unchanged. 1.3.0's U-Boot imports only `serial#` and `ethaddr` from `env1`/`env2` and has no untrusted mode. |
+| Boot | 1.3.0's and 1.4.0's U-Boot load `kernel.fit` from `boot` (or `recovery`) and run `bootm $loadaddr#conf-rk3566-az07-ac50`. The kernel command line carries the dm-verity table of `rootfs` with its root hash (no `DM_VERITY_VERIFY_ROOTHASH_SIG`), so a new kernel, device tree or command line can keep inMusic's root file system unchanged. Both import only `serial#` and `ethaddr` from `env1`/`env2` and have no untrusted mode. |
 | Kernel | `SECURITY_LOADPIN_ENFORCE` and `SECURITY_LOADPIN_VERITY` on, `/usr/lib/az0x/trusted-verity-digests` empty; `MODULE_SIG`, `MODVERSIONS`, `KEXEC`, lockdown and IMA off. `loadpin.enforce=0` on the command line would let unsigned modules load. |
-| Base modules | `KERNEL=6.18 tools/build_kernel_modules.sh` builds them for `6.18.59-imb-2026-10-26-rt9` against inMusic's public 6.18.45 tree (`engine-os-g2/5.3`, `rk3566-az07-ac50.dts` included) brought to 6.18.59 with kernel.org's stable increments; the headers match (stable rejects touch only `.c` files, and upstream `-rt6` to `-rt9` changes no header) and the 1.4 `/proc/config.gz` gives the same configuration apart from the compiler's name. Every symbol they need is exported by the 6.18 tree or the stock `videobuf2` modules. The webcam module carries its own `f_uvc` (6.18's in `kernel/uvc-6.18`), so the kernel's missing `F_UVC` does not matter. |
-| Recovery | 1.3.0's U-Boot: 2 failed starts go to update mode, 4 to the `recovery` partition, 6 to fastboot over USB; the recovery button on a clean start goes to `recovery`. U-Boot also has a rollback generation number (`AZ0X_GENERATION_NUMBER`), so going back to 1.3.0.12 may be refused (not tried). |
+| Base modules | `KERNEL=6.18 tools/build_kernel_modules.sh` builds them for `6.18.59-imb-2026-10-26-rt9` against inMusic's 1.4.0 kernel release with the 1.4 `/proc/config.gz`. The first builds used inMusic's 6.18.45 tree (`engine-os-g2/5.3`) brought to 6.18.59 with kernel.org's stable increments; that tree differs from the 1.4.0 release only in five `.c` files (`seq_midi.c`, `8250_port.c`, three DSI panel drivers) and the `az04`/`az07` defconfigs, and the modules built against the release are byte-identical. Every symbol they need is exported by the 6.18 tree or the stock `videobuf2` modules. The webcam module carries its own `f_uvc` (6.18's in `kernel/uvc-6.18`), so the kernel's missing `F_UVC` does not matter. |
+| Recovery | 1.3.0's and 1.4.0's U-Boot: 2 failed starts go to update mode, 4 to the `recovery` partition, 6 to fastboot over USB; the recovery button on a clean start goes to `recovery`. U-Boot also has a rollback generation number (`AZ0X_GENERATION_NUMBER`), so going back to 1.3.0.12 may be refused (not tried). |
 
 The smallest own boot image: the stock 1.4 kernel, a device tree whose sound
 node has no `system-clock-frequency` (48 and 96 kHz), and `loadpin.enforce=0`,
 packed as `kernel.fit` for `boot` only. `recovery`, `spl1`/`spl2` and
 `uboot1`/`uboot2` stay stock; the bootloaders sit under the chip's own secure
-boot and must not be written. First step: get the 1.4 sources from inMusic and
-read the 2026.07 U-Boot to see what untrusted mode accepts.
+boot and must not be written. The 1.4 sources do not show what untrusted
+mode accepts. Next step: read the U-Boot version in `uboot1`/`uboot2` on
+1.4.0.8.
 
 ## Reference and reproducibility
 
