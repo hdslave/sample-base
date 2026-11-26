@@ -65,7 +65,7 @@ writing the partitions). What it lets the MPC start is therefore still not known
 | Area | 1.4.0.7 |
 | --- | --- |
 | Setting | Stock app property `Enhancements.UntrustedOS` (settings key `untrusted_os`). Its text: switching it off turns secure boot back on, after which the MPC "may fall back to firmware update mode". |
-| Use record | The stock app has code that writes `imb-dev-mode-used=1` and `imb-beta-features-used=1` into the U-Boot environment (`/etc/fw_env.config`: `env1` primary, `env2` backup). Startup removes only the developer-use marker; see below. |
+| Developer flags | The stock app on 1.4.0.7 holds two obfuscated strings, decoded as `dev-mode` and `beta-features`, in code that also uses a plain `imb-` string and links libubootenv. What that code does with them was not traced. No variable made from them has been seen in the U-Boot environment (`/etc/fw_env.config`: `env1` primary, `env2` backup): on 1.4.0.7, and on 1.4.0.8 also after Developer Mode was turned off and on again, it held only `serial#`. |
 | eMMC | GPT: `spl1`/`spl2` 480K, `env1`/`env2` 512K, `uboot1`/`uboot2` 4M, `factory` 64M (p7), `boot` 128M (p8), `recovery` 128M (p9), `rootfs` 1G (p10, dm-verity), `content` 4G (p11), `data` (p12). |
 | Boot | 1.3.0's and 1.4.0's U-Boot load `kernel.fit` from `boot` (or `recovery`) and run `bootm $loadaddr#conf-rk3566-az07-ac50`. The kernel command line carries the dm-verity table of `rootfs` with its root hash (no `DM_VERITY_VERIFY_ROOTHASH_SIG`), so a new kernel, device tree or command line can keep inMusic's root file system unchanged. Both import only `serial#` and `ethaddr` from `env1`/`env2` and have no untrusted mode. |
 | Kernel | `SECURITY_LOADPIN_ENFORCE` and `SECURITY_LOADPIN_VERITY` on, `/usr/lib/az0x/trusted-verity-digests` empty; `MODULE_SIG`, `MODVERSIONS`, `KEXEC`, lockdown and IMA off. `loadpin.enforce=0` on the command line would let unsigned modules load. |
@@ -84,17 +84,16 @@ there is no `/dev/mem` or kexec route in this build. The upstream
 describes the boot argument and the read-only pin restriction.
 
 At app startup on 1.4.0.7 and 1.4.0.8, after stopping `ac50.service`,
-`install/clear-dev-marker.sh` removes only `imb-dev-mode-used`. It checks
-architecture and the stock-app hash, reads the full environment, writes
-only if the exact marker exists (including an empty value), then verifies
-removal. A targeted `fw_printenv imb-dev-mode-used` prints an empty
-assignment even when absent on 1.4.0.8, so it cannot decide whether to write.
-An unreadable environment, missing tools or failed write is logged and does
-not block startup or recovery. `imb-beta-features-used` and other variables
-stay untouched. Returning to stock can set the marker again; this does not
-guarantee that use is never recorded. The connected 1.4.0.8 unit had no
-marker: running the helper left its environment unchanged. Removal and
-failure paths are covered with simulated tools, not a device flash write.
+`install/clear-dev-marker.sh` deletes a U-Boot variable named
+`imb-dev-mode-used` if the environment has one. That name was never seen:
+it was put together from the two decoded strings above, so the script has
+not deleted anything on either firmware. It checks the architecture and the
+stock app's hash, reads the full environment and writes only when a variable
+of exactly that name is there, then reads again to check. A targeted
+`fw_printenv imb-dev-mode-used` prints an empty assignment even when the
+variable is absent on 1.4.0.8, so the script reads the whole environment
+instead. An unreadable environment, missing tools or a failed write is
+logged and does not block startup or recovery.
 
 The smallest own boot image: the stock 1.4 kernel, a device tree whose sound
 node has no `system-clock-frequency` (48 and 96 kHz), and `loadpin.enforce=0`,
