@@ -120,7 +120,6 @@ Description=sample-base standalone JUCE instrument (from the SD card)
 [Service]
 Type=exec
 ExecStartPre=/bin/systemctl stop ac50.service
-ExecStartPre=-/bin/sh $1/clear-dev-marker.sh
 ExecStart=$1/sample-base$option
 ExecStopPost=/bin/sh $1/restore-stock.sh
 Restart=no

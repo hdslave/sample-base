@@ -3,8 +3,7 @@
 # Starts the installed app from the card, as device.py start does: the
 # binary and recovery script are checked, copied into a new RAM directory
 # and run by a session unit that stops the stock app and starts it again on
-# any exit. On 1.4 the developer-use marker is cleared; otherwise only
-# /run changes. On any doubt the stock app keeps running.
+# any exit. Only /run changes; on any doubt the stock app keeps running.
 set -eu
 DIR=${1:?SD sample-base folder required}
 # The stock firmwares known to work (device.py STOCK_FIRMWARES): 1.3.0.12, 1.4.0.7, 1.4.0.8.
@@ -30,8 +29,8 @@ ID=$(tr -d '-' < /proc/sys/kernel/random/uuid | cut -c 1-12)
 case "$ID" in ''|*[!0-9a-f]*) echo 'No id for the RAM folder' >&2; exit 1 ;; esac
 RELEASE=/run/sample-base-release-sd$ID
 mkdir -m 700 "$RELEASE"
-# Copy the binary, recovery and marker cleanup, plus sd-update.sh if present.
-FILES="sample-base restore-stock.sh clear-dev-marker.sh"
+# Copy the binary, the recovery script and, if the release has it, sd-update.sh.
+FILES="sample-base restore-stock.sh"
 [ ! -f "$DIR/sd-update.sh" ] || FILES="$FILES sd-update.sh"
 (cd "$DIR" && cp $FILES "$RELEASE/")
 (cd "$DIR" && sha256sum $FILES) | (cd "$RELEASE" && sha256sum -c -)
@@ -49,7 +48,6 @@ Description=sample-base standalone JUCE instrument (from the SD card)
 [Service]
 Type=exec
 ExecStartPre=/bin/systemctl stop ac50.service
-ExecStartPre=-/bin/sh $RELEASE/clear-dev-marker.sh
 ExecStart=$RELEASE/sample-base$OPTION
 ExecStopPost=/bin/sh $RELEASE/restore-stock.sh
 Restart=no

@@ -52,8 +52,7 @@ Neither has an untrusted mode:
   The environment cannot turn this off (`verify` is not imported).
   `fw_setenv bootargs ...` and `fw_setenv loadpin.enforce 0` cannot disable
   LoadPin either: neither variable is imported or added to the kernel command
-  line. `loadpin.enforce=0` must reach the kernel at boot; deleting the
-  developer-use record does not change LoadPin or secure boot.
+  line. `loadpin.enforce=0` must reach the kernel at boot.
 - Kernel: LoadPin is the upstream code, and no file reads the switch.
 
 What the switch changes is outside the published sources: the Rockchip
@@ -82,18 +81,6 @@ off. Root cannot turn off enforcement through the sysctl after this pin;
 there is no `/dev/mem` or kexec route in this build. The upstream
 [LoadPin documentation](https://docs.kernel.org/admin-guide/LSM/LoadPin.html)
 describes the boot argument and the read-only pin restriction.
-
-At app startup on 1.4.0.7 and 1.4.0.8, after stopping `ac50.service`,
-`install/clear-dev-marker.sh` deletes a U-Boot variable named
-`imb-dev-mode-used` if the environment has one. That name was never seen:
-it was put together from the two decoded strings above, so the script has
-not deleted anything on either firmware. It checks the architecture and the
-stock app's hash, reads the full environment and writes only when a variable
-of exactly that name is there, then reads again to check. A targeted
-`fw_printenv imb-dev-mode-used` prints an empty assignment even when the
-variable is absent on 1.4.0.8, so the script reads the whole environment
-instead. An unreadable environment, missing tools or a failed write is
-logged and does not block startup or recovery.
 
 The smallest own boot image: the stock 1.4 kernel, a device tree whose sound
 node has no `system-clock-frequency` (48 and 96 kHz), and `loadpin.enforce=0`,

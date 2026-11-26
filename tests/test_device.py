@@ -90,7 +90,6 @@ class ReleaseCleanupTests(unittest.TestCase):
             (root / "install").mkdir()
             (root / "install/restore-stock.sh").write_text("#!/bin/sh\nexit 0\n")
             (root / "install/sd-update.sh").write_text("#!/bin/sh\nexit 0\n")
-            (root / "install/clear-dev-marker.sh").write_text("#!/bin/sh\nexit 0\n")
             with patch("device.ROOT", root), patch("device.BINARY", root / "build/sample-base"), \
                     patch.object(device, "check_identity"), \
                     patch.object(device, "run", side_effect=fake_mpc(calls, free_kb=40 << 10)), \
@@ -109,8 +108,6 @@ class SwitchingTests(unittest.TestCase):
         unit = service_unit("/run/sample-base-release-123abc", 45)
         self.assertIn("ExecStopPost=/bin/sh /run/sample-base-release-123abc/restore-stock.sh\n", unit)
         self.assertIn("ExecStartPre=/bin/systemctl stop ac50.service\n", unit)
-        self.assertIn("ExecStartPre=-/bin/sh /run/sample-base-release-123abc/clear-dev-marker.sh\n", unit)
-        self.assertLess(unit.index("stop ac50.service"), unit.index("clear-dev-marker.sh"))
         self.assertIn("RuntimeMaxSec=45\n", unit)
         self.assertIn("Restart=no\n", unit)
         self.assertIn("ExecStart=/run/sample-base-release-123abc/sample-base\n", unit)
@@ -125,17 +122,15 @@ class SwitchingTests(unittest.TestCase):
             (root / "install").mkdir()
             (root / "install/restore-stock.sh").write_text("#!/bin/sh\nexit 0\n")
             (root / "install/sd-update.sh").write_text("#!/bin/sh\nexit 0\n")
-            (root / "install/clear-dev-marker.sh").write_text("#!/bin/sh\nexit 0\n")
             with patch("device.ROOT", root), patch("device.BINARY", root / "build/sample-base"), \
                     patch.object(device, "check_identity"), \
                     patch.object(device, "run", side_effect=fake_mpc([])) as run, \
                     patch("device.subprocess.run") as transfer:
                 release = device.stage()
-        self.assertEqual(transfer.call_count, 4)
+        self.assertEqual(transfer.call_count, 3)
         self.assertEqual(transfer.call_args_list[0].args[0][-1], "root@" + device.host + ":" + release + "/sample-base")
         self.assertEqual(transfer.call_args_list[1].args[0][-1], "root@" + device.host + ":" + release + "/restore-stock.sh")
-        self.assertEqual(transfer.call_args_list[2].args[0][-1], "root@" + device.host + ":" + release + "/clear-dev-marker.sh")
-        self.assertEqual(transfer.call_args_list[3].args[0][-1], "root@" + device.host + ":" + release + "/sd-update.sh")
+        self.assertEqual(transfer.call_args_list[2].args[0][-1], "root@" + device.host + ":" + release + "/sd-update.sh")
         self.assertIn(release + "/sample-base --self-test " + release + "/test.wav",
                       [call.args[0] for call in run.call_args_list])
 
