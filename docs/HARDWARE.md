@@ -678,6 +678,58 @@ warn about), and a process that leaves while the computer waits on it
 answers first. A webcam an earlier run left is taken as it is
 (`gadget_mirror_format()`), so a restart with the same size never rebinds.
 
+## File Sharing (the card as a network drive)
+
+File Sharing serves the SD card over SMB 2 and 3 to the computer on the USB-C
+network ([src/drivers/file_share.h](../src/drivers/file_share.h)). The card
+stays mounted on the MPC: the app and the computer use the same exFAT file
+system at once, unlike [SD card access](#sd-card-access). An app turns it on
+through `App::file_sharing()`.
+
+The MPC's kernel is built without an SMB server and the root file system has
+no Samba. `kernel/ksmbd/` is the kernel's own server, `fs/smb/server` from
+the 6.12.60 release, built out of tree as `sample_base_smb.ko` together with
+`cifs_arc4.c` and `nls_ucs2_utils.c` (`CIFS` and `NLS_UCS2_UTILS` are off).
+The crypto it asks for by name (`md5`, `cmac`, `ccm`, `gcm`) and `nls_utf8`
+are stock modules. On firmware 1.4 every base module is refused by LoadPin
+(above), and this one with them; File Sharing reports `failed` there. The
+6.18 build (`kernel/ksmbd-6.18/`, with `lib/crypto/arc4.c`; 6.18's ksmbd
+calls `libmd5` directly) has not been loaded on an MPC.
+
+ksmbd moves the files itself and asks a process for everything else over
+generic netlink (`SMBD_GENL`); the runtime is that process, on a thread of
+its own:
+
+- **Start**: port 445 on the gadget's network interface only (`usb0`),
+  signing when the computer asks for it, a 10 s heartbeat. A new run finds
+  the server running and takes it over, so a computer keeps its connection
+  across a restart; when no run answers, ksmbd's heartbeat stops the server
+  10 to 20 s later (from its source; not timed here).
+- **Logins**: the name `guest` (or none) is a guest. Any other name is a user
+  with an empty password, checked by the server; its session is signed.
+  macOS refuses a named login that the server answers as a guest
+  (`smbutil`: "Authentication error"); Windows 11 turns guest logons away
+  by default (Microsoft's documentation; Windows not tried here).
+- **Shares**: `SD Card` is the card's mount point, read-write, files made as
+  root (exFAT has no owners). The share's top folder is where the card is
+  mounted, so it needs ksmbd's `CROSSMNT` flag: without it the server
+  lists the empty `/media/<uuid>` folder under the mount. `IPC$` carries
+  srvsvc's share list (NetrShareEnum and NetrShareGetInfo,
+  [src/drivers/smb_pipe.h](../src/drivers/smb_pipe.h)); other pipes
+  (macOS asks for `mdssvc` and `MsFteWds`) are refused by ksmbd itself.
+- **Connections**: while a computer has `SD Card` open, SD card access
+  refuses to lend the card ("the card is open on the computer over the
+  network"); lending stops the server first in any case
+  (`/sys/class/ksmbd-control/kill_server`, which closes every connection).
+  The server stops too when the card's mount point changes under an open
+  connection, and when the computer has been unplugged for 5 s.
+  `restore-stock.sh` stops it for the stock app. The module is never
+  unloaded.
+
+Measured on 1.3.0.12 from macOS (`smbutil`, `mount_smbfs`): SMB 3.1.1, the
+share list as guest and by name, a 32 MB file written in 2.4 s and read back
+in 1.0 s with the same SHA-256.
+
 ## Jack detection
 
 Headphones and line out are the only jacks the AC50 can tell are plugged.

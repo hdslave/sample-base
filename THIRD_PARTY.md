@@ -46,6 +46,12 @@ against inMusic's MPC Sample 1.4.0 kernel source release (6.18.59, pinned in
   `uvc_trace.c` and `uvc_trace.h`, copied from the 6.18 tree above with
   their notices, with the same `sample-base:` changes.
 - `kernel/vepu/`: written for this project, GPL-2.0.
+- `kernel/ksmbd/`: the kernel's SMB3 server, `fs/smb/server/` (Namjae Jeon,
+  Samsung Electronics and others, GPL-2.0-or-later) with the headers it takes
+  from `fs/smb/common/`, `fs/smb/common/cifs_arc4.c` and
+  `fs/nls/nls_ucs2_utils.c` (GPL-2.0), copied from the 6.12.60 release
+  unchanged, at their kernel paths. `kernel/ksmbd-6.18/`: the same from the
+  6.18 tree, with `lib/crypto/arc4.c` in place of `cifs_arc4.c`.
 
 ## Fonts and platform
 
