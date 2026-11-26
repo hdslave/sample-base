@@ -192,7 +192,7 @@ bool Controller::Output::send(const std::string& address, const MidiPacket& pack
 void Controller::midi_packet(Session& session, const MidiPortInfo& port, const MidiPacket& packet, bool syncing) {
     if (port.surface) {
         surface_events.push(packet); ++session.hardware_events;
-        session.wake.input(); // the screen answers a control at once
+        session.wake.input(); // wake a resting screen for the next allowed frame
         MidiEvent event;
         if (!channel_event(packet, event)) return;
         session.last_midi.store((unsigned(event.status) << 16) | (unsigned(event.key) << 8) | event.value);

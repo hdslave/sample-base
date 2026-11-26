@@ -21,9 +21,8 @@
 //   audio    AudioDevice::run(), calling App::render()
 //   MIDI     Controller::run_midi(): surface and external MIDI, lights
 //   service  Controller::run(): control commands and slow hardware requests
-//   screen   run_app(): up to 60 frames a second while a control is in use,
-//            at App::frame_interval() while the picture moves by itself, 10 a
-//            second once it stands still; asleep in between (ScreenWake)
+//   screen   run_app(): at App::frame_interval() during input or animation,
+//            10 frames a second once it stands still; asleep in between (ScreenWake)
 // The screen thread's counters (Display::Stats, plus the last draw).
 struct ScreenStats {
     std::atomic<uint64_t> presented {0}, pushed {0}, pixels {0}, clips {0};

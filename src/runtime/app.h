@@ -145,12 +145,10 @@ public:
     // second; animate from the clock, not by counting frames. Not called
     // while a remote prompt is shown or with --headless.
     virtual void draw(juce::Graphics&) = 0;
-    // Screen thread, each frame: the time from one frame to the next while
-    // the picture changes with no control in use (a play head, a meter). A
-    // control used is answered at 60 frames a second for a moment whatever
-    // this says, and a still screen is drawn 10 times a second. Every frame
-    // costs a whole draw(), so a longer interval saves the screen thread's
-    // CPU while something plays; 16,667 us (the default) is 60 a second.
+    // Screen thread, each frame: the minimum time between frames, including
+    // after input. Input wakes a still screen as soon as this interval allows.
+    // The runtime draws at 10 fps when idle and clamps the active rate to
+    // 10–60 fps. The default interval of 16,667 us allows 60 fps.
     virtual std::chrono::microseconds frame_interval() const { return std::chrono::microseconds(16667); }
 
     // Service thread, every few milliseconds: slow work such as mixer routes.

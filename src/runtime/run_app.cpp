@@ -119,15 +119,15 @@ int run_app(App& app, const Options& options) {
         // This thread draws the screen: the remote prompt while one is shown,
         // otherwise the app. present() waits while the panel still receives
         // the last frame, so the panel's SPI push sets the rate, and frames
-        // never come closer than fast_interval (about the panel's own scan).
+        // never come closer than the app's frame interval.
         // Every frame is a whole draw() whatever changed, so the loop draws
         // only as often as what is on the screen asks:
-        //   a control used in the last hands_on   every fast_interval (60 a second)
+        //   a control used in the last hands_on   every App::frame_interval()
         //   the picture changing by itself        every App::frame_interval()
         //   a few frames after it last changed    slowing to settle_interval
         //   standing still                        every idle_interval (10 a second)
         // Between frames it sleeps on session.wake: a control, a note from
-        // outside or a screenshot asked for draws the next frame at once.
+        // outside or a screenshot wakes it for the next frame the cap allows.
         using ScreenClock = std::chrono::steady_clock;
         constexpr std::chrono::microseconds fast_interval {16667}, settle_interval {50000}, idle_interval {100000}, hands_on {300000};
         constexpr unsigned settle_after = 3, idle_after = 8; // frames in a row that changed nothing
@@ -157,19 +157,20 @@ int run_app(App& app, const Options& options) {
             }
             still = changed ? 0 : std::min(still + 1, idle_after);
             const bool hands = start - last_input < hands_on;
-            const auto moving = std::clamp(app.frame_interval(), fast_interval, idle_interval);
-            // A hand on the controls: the fast rate, whether or not this frame changed. What a control does often
+            const auto active_interval = display ? std::clamp(app.frame_interval(), fast_interval, idle_interval) : fast_interval;
+            // A hand on the controls: the selected rate, even if this frame stayed still. What a control does often
             // shows a frame or more after it (the engine answers a block later), so a still frame is no reason to
             // slow while the hand is there.
-            const auto interval = !display ? idle_interval : hands ? fast_interval
-                                : still >= idle_after ? idle_interval : still >= settle_after ? std::max(moving, settle_interval) : moving;
-            // Asleep until the frame is due. A control wakes it: that frame at once, though never nearer the last
-            // than the fast rate. `seen` is from before this frame was drawn, so a control used while it was (which
+            const auto interval = !display ? idle_interval : hands ? active_interval
+                                : still >= idle_after ? idle_interval
+                                : still >= settle_after ? std::max(active_interval, settle_interval) : active_interval;
+            // Asleep until the frame is due. A control wakes it at the earliest frame allowed by the cap.
+            // `seen` is from before this frame was drawn, so a control used while it was (which
             // the picture may have missed) counts too, and is not left waiting out a still screen's interval.
             if (session.wake.sleep_until(start + interval, seen)) {
                 seen = session.wake.events.load();
                 last_input = ScreenClock::now();
-                std::this_thread::sleep_until(start + fast_interval);
+                std::this_thread::sleep_until(start + active_interval);
             }
         }
     } catch (...) {
