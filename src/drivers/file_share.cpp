@@ -29,6 +29,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr const char* module_name = "sample_base_smb";
 constexpr const char* kill_server = "/sys/class/ksmbd-control/kill_server";
+constexpr const char* server_stats = "/sys/class/ksmbd-control/stats"; // "2 running 445 ...": version, state, port
 
 // The server's messages (kernel/ksmbd/fs/smb/server/ksmbd_netlink.h): the
 // generic netlink command is the event, and its one attribute, of the same
@@ -178,6 +179,14 @@ bool load_module(std::string& error) {
                                              {sample_base_smb_6_18_module, sample_base_smb_6_18_module_end}}, &error);
 }
 
+// The server's state: "startup" (waiting for a process to start it),
+// "running", "reset" or "shutdown"; "" without the module.
+std::string server_state() {
+    std::string version, state;
+    std::ifstream(server_stats) >> version >> state;
+    return state;
+}
+
 // Stops the server at once, closing every connection; it waits for a start.
 void stop_server() {
     if (!kernel_module::loaded(module_name)) return;
@@ -218,7 +227,7 @@ void FileShare::let_go() {
 
 void FileShare::run() {
     Netlink link;
-    bool started = false, stopped = false;
+    bool started = false, stopped = false, serving = false;
     unsigned seen = 0;
     uint32_t startup = 0;            // The start message's sequence number, until the kernel answers it
     std::string answered;            // The card's folder as the server was last told it
@@ -228,7 +237,8 @@ void FileShare::run() {
     Clock::time_point retry {}, unplugged {};
     bool was_connected = false;
     std::vector<uint8_t> buffer(1 << 18);
-    auto forget = [&] { trees.clear(); pipes.clear(); answered.clear(); users.store(0); started = false; startup = 0; };
+    auto forget = [&] { trees.clear(); pipes.clear(); answered.clear(); users.store(0); started = serving = false; startup = 0; };
+    Clock::time_point next_look {}; // When to check next that the server still runs
     auto report = [&](FileShareState state, const std::string& error) {
         unsigned count = unsigned(std::count_if(trees.begin(), trees.end(), [](const auto& tree) { return tree.second; }));
         users.store(count);
@@ -290,6 +300,17 @@ void FileShare::run() {
             else { report(FileShareState::Failed, error); retry = now + std::chrono::seconds(5); }
         }
         if (!started) { wait(250); continue; }
+        // Reset under this run (kill_server from elsewhere, or a heartbeat
+        // that found no answer): it waits in "startup" for a start, so start
+        // it again. Checked once a second, from 2 s after it said it runs.
+        if (serving && now >= next_look) {
+            next_look = now + std::chrono::seconds(1);
+            if (server_state() == "startup") {
+                std::cerr << "File Sharing: the SMB server was reset; starting it again" << std::endl;
+                forget();
+                continue;
+            }
+        }
 
         pollfd ready {link.fd, POLLIN, 0};
         if (poll(&ready, 1, 250) <= 0) continue;
@@ -303,7 +324,11 @@ void FileShare::run() {
                 auto* failure = reinterpret_cast<const nlmsgerr*>(NLMSG_DATA(n));
                 if (startup && n->nlmsg_seq == startup) {
                     startup = 0;
-                    if (failure->error == 0) report(FileShareState::Serving, {});
+                    if (failure->error == 0) {
+                        serving = true;
+                        next_look = now + std::chrono::seconds(2); // Its start finishes on a kernel worker
+                        report(FileShareState::Serving, {});
+                    }
                     else {
                         std::string error = std::string("the SMB server refused to start: ") + std::strerror(-failure->error);
                         std::cerr << "File Sharing: " << error << std::endl;

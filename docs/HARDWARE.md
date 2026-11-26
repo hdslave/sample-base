@@ -704,7 +704,9 @@ its own:
   signing when the computer asks for it, a 10 s heartbeat. A new run finds
   the server running and takes it over, so a computer keeps its connection
   across a restart; when no run answers, ksmbd's heartbeat stops the server
-  10 to 20 s later (from its source; not timed here).
+  10 to 20 s later (from its source; not timed here). A server reset under
+  a run (`kill_server` from elsewhere; its `stats` say `startup`) is started
+  again within a second.
 - **Logins**: the name `guest` (or none) is a guest. Any other name is a user
   with an empty password, checked by the server; its session is signed.
   macOS refuses a named login that the server answers as a guest

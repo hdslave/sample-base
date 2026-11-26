@@ -33,7 +33,8 @@
 // ksmbd-control/kill_server, which closes every connection); on starts it
 // again. A new run (a restart, a deploy) finds the server running and takes
 // it over, so the computer keeps its connection; when no run answers, the
-// server's heartbeat stops it 10 to 20 s later.
+// server's heartbeat stops it 10 to 20 s later. A server stopped under a run
+// (kill_server from elsewhere) is started again within a second.
 // The card leaving (lent, taken out, another card) and the computer
 // unplugging stop the server too, so no connection outlives what it named.
 enum class FileShareState : uint8_t { Off, Starting, Serving, Failed };
